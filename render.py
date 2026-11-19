@@ -259,10 +259,10 @@ def render_video(audio, backdrop, output, accent, seconds, draft):
     width, height, fps = (640, 360, 12) if draft else (WIDTH, HEIGHT, 24)
     wave_width, wave_height = round(width * 0.9), round(height * 0.083)
     graph = (
-        f"[0:v]scale={width}:{height},format=yuv420p,loop=-1:1:0,setpts=N/({fps}*TB)[sky];"
+        f"[0:v]scale={width}:{height},format=yuv420p,loop=-1:1:0,setpts=N[sky];"
         "[1:a]asplit[waveaudio][mix];"
         f"[waveaudio]aformat=channel_layouts=mono,showwaves=s={wave_width}x{wave_height}:r={fps}:mode=cline:"
-        f"scale=sqrt:colors=0x{accent},format=rgba,colorkey=0x000000:0.08:0.12[wave];"
+        f"scale=sqrt:draw=full:colors=0x{accent},format=rgba[wave];"
         f"[sky][wave]overlay=x=(W-w)/2:y=H-h-H*0.043:eof_action=pass,"
         f"fade=t=in:st=0:d=1,fade=t=out:st={max(0, seconds-3)}:d=3,setsar=1[v];"
         f"[mix]afade=t=out:st={max(0, seconds-5)}:d=5[a]"
