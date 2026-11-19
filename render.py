@@ -261,7 +261,7 @@ def render_video(audio, backdrop, output, accent, seconds, draft):
     graph = (
         f"[0:v]scale={width}:{height},format=yuv420p,loop=-1:1:0,setpts=N/({fps}*TB)[sky];"
         "[1:a]asplit[waveaudio][mix];"
-        f"[waveaudio]showwaves=s={wave_width}x{wave_height}:r={fps}:mode=cline:"
+        f"[waveaudio]aformat=channel_layouts=mono,showwaves=s={wave_width}x{wave_height}:r={fps}:mode=cline:"
         f"scale=sqrt:colors=0x{accent},format=rgba,colorkey=0x000000:0.08:0.12[wave];"
         f"[sky][wave]overlay=x=(W-w)/2:y=H-h-H*0.043:eof_action=pass,"
         f"fade=t=in:st=0:d=1,fade=t=out:st={max(0, seconds-3)}:d=3,setsar=1[v];"
