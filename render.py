@@ -101,13 +101,14 @@ def sources_for(title, scratch):
     return files, credits
 
 
-def prepare(files, scratch):
-    sources, passages = [], []
-    for path in files:
+def prepare(files, credits, scratch):
+    sources, passages, usable_credits = [], [], []
+    for path, credit in zip(files, credits):
         raw = scratch / f"source-{len(sources)}.pcm"
-        subprocess.run(FFMPEG + ["-i", str(path), "-map", "0:a:0", "-t", "1800",
-                                "-ac", "2", "-ar", str(RATE), "-f", "f32le", str(raw)], check=True)
-        if raw.stat().st_size < RATE * 8 * 2:
+        decoded = subprocess.run(FFMPEG + ["-i", str(path), "-map", "0:a:0", "-t", "1800",
+                                          "-ac", "2", "-ar", str(RATE), "-f", "f32le", str(raw)])
+        if decoded.returncode or raw.stat().st_size < RATE * 8 * 2:
+            print(f"Skipping unavailable or empty audio from {credit[0]!r}.", file=sys.stderr)
             continue
         samples = np.memmap(raw, dtype="<f4", mode="r").reshape(-1, 2)
         # Sample every 12th frame to estimate RMS for each quarter second.
@@ -121,6 +122,7 @@ def prepare(files, scratch):
         first, last = int(active[0]), int(active[-1]) + 1
         source = len(sources)
         sources.append(samples)
+        usable_credits.append(credit)
         # Use quiet points close to the target length to avoid cutting through accents.
         start = first
         target_length = min(76, max(5, (last - first) // 20))
@@ -136,7 +138,7 @@ def prepare(files, scratch):
             start = end
     if not passages:
         raise SystemExit("No usable audio passages were found.")
-    return sources, passages
+    return sources, passages, usable_credits
 
 
 def write_mix(path, sources, passages, secs, rng):
@@ -262,7 +264,7 @@ def render_video(audio, backdrop, output, accent, seconds, draft):
         f"[waveaudio]showwaves=s={wave_width}x{wave_height}:r={fps}:mode=cline:"
         f"scale=sqrt:colors=0x{accent},format=rgba,colorkey=0x000000:0.08:0.12[wave];"
         f"[sky][wave]overlay=x=(W-w)/2:y=H-h-H*0.043:eof_action=pass,"
-        f"fade=t=in:st=0:d=1,fade=t=out:st={max(0, seconds-3)}:d=3[v];"
+        f"fade=t=in:st=0:d=1,fade=t=out:st={max(0, seconds-3)}:d=3,setsar=1[v];"
         f"[mix]afade=t=out:st={max(0, seconds-5)}:d=5[a]"
     )
     subprocess.run(FFMPEG + [
@@ -286,8 +288,12 @@ def write_metadata(out, title, seconds, credits):
     length = "1 Hour" if seconds == 3600 else f"{seconds}-Second Preview"
     suffix = f" Soundtrack Mix | {length} Cinematic Score"
     video_title = title[:100 - len(suffix)].rstrip() + suffix
+    opening = (
+        f"Listen to a continuous one-hour {title} soundtrack mix."
+        if seconds == 3600 else f"Preview the continuous {title} soundtrack mix in {seconds} seconds."
+    )
     description = (
-        f"Listen to a {length.lower()} continuous {title} soundtrack mix. "
+        f"{opening} "
         "The edit moves through quieter passages, fuller arrangements and a final resolution, "
         "paired with an original nightscape and audio-reactive visualizer.\n\n"
         "Independent mix.\n\n"
@@ -317,7 +323,7 @@ def main():
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
         else:
             files, credits = sources_for(title, scratch)
-        sources, passages = prepare(files, scratch)
+        sources, passages, credits = prepare(files, credits, scratch)
         if len(passages) < 3 and args.seconds >= 600:
             raise SystemExit("Only one or two usable passages were found. Add more source audio for an hour with variation.")
         mix = scratch / "mix.pcm"
