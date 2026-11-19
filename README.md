@@ -27,7 +27,9 @@ The arranger finds quieter transition points, varies the order of passages along
 
 The workflow also searches for matching trailers and scene clips. It chooses a prominent face from the available footage for the foreground portrait and inserts four brief, muted scene cutaways during the hour. The score continues underneath. If no clip can be downloaded, the animated eclipse and waveform still render. If no face is detected, cutaways can still be used. The description includes separate visual credits when footage is used. Check that you also have permission to reuse the footage before uploading.
 
-YouTube sometimes rejects traffic from GitHub-hosted runners. A failed search or download fails the job with diagnostic logs. The local audio mode below uses the same production renderer if you already have the soundtrack files.
+YouTube rejected audio downloads from the GitHub-hosted runner during an Interstellar test by requiring a sign-in check. A failed search or download fails the job with diagnostic logs. If you have a Linux x64 machine with working access to your permitted sources, you can register it as a [self-hosted runner](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners), give it the label `soundtrack-render`, and set the repository Actions variable `SOUNDTRACK_RUNNER_LABEL` to that label. The title remains the only input when running the workflow. Availability still depends on YouTube and the runner's network. Use a private repo for self-hosting.
+
+The local audio mode below uses the same production renderer if you already have the soundtrack and clip files.
 
 ## Run locally
 

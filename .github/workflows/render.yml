@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   render:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SOUNDTRACK_RUNNER_LABEL || 'ubuntu-24.04' }}
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
