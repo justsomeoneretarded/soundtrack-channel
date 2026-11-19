@@ -1,0 +1,37 @@
+name: Render soundtrack video
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Movie or show title, optionally followed by its release year
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python -m pip install -r requirements.txt
+      - name: Find audio, arrange, and render
+        env:
+          SOUNDTRACK_TITLE: ${{ inputs.title }}
+        run: python render.py --title="$SOUNDTRACK_TITLE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soundtrack-video
+          path: dist/
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
