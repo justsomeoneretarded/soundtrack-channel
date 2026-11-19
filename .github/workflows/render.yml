@@ -20,10 +20,34 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Install rendering tools
+        run: |
           python -m pip install -r requirements.txt
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            toolkit="$RUNNER_TEMP/soundtrack-tools"
+            mkdir -p "$toolkit"
+            cd "$toolkit"
+            upstream=https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1
+            curl -fsSL --retry 2 --max-time 90 "$upstream/ffmpeg-linux-x64.gz" -o ffmpeg.gz
+            curl -fsSL --retry 2 --max-time 90 "$upstream/ffprobe-linux-x64.gz" -o ffprobe.gz
+            sha256sum -c <<'CHECKSUMS'
+          bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa  ffmpeg.gz
+          25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067  ffprobe.gz
+          CHECKSUMS
+            gzip -d ffmpeg.gz ffprobe.gz
+            chmod +x ffmpeg ffprobe
+            echo "$toolkit" >> "$GITHUB_PATH"
+          fi
+          if [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ] ||
+             [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf ]; then
+            fonts="$RUNNER_TEMP/soundtrack-fonts"
+            mkdir -p "$fonts"
+            upstream=https://raw.githubusercontent.com/matplotlib/matplotlib/v3.10.0/lib/matplotlib/mpl-data/fonts/ttf
+            for font in DejaVuSans-Bold.ttf DejaVuSansMono.ttf; do
+              curl -fsSL --retry 2 --max-time 30 "$upstream/$font" -o "$fonts/$font"
+            done
+            echo "SOUNDTRACK_FONT_DIR=$fonts" >> "$GITHUB_ENV"
+          fi
       - name: Find audio, arrange, and render
         env:
           SOUNDTRACK_TITLE: ${{ inputs.title }}

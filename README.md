@@ -13,7 +13,7 @@ The artifact contains:
 | File | Purpose |
 | --- | --- |
 | `soundtrack.mp4` | 1280×720, 24 fps, H.264 video and stereo AAC audio, exactly 60 minutes |
-| `thumbnail.jpg` | Original 1280×720 nightscape designed for the title |
+| `thumbnail.jpg` | 1280×720 eclipse art with a character portrait when footage is available |
 | `youtube-title.txt` | Search-friendly title with the work name, soundtrack, and duration |
 | `youtube-description.txt` | Ready-to-edit description with relevant terms, source credits, links, and hashtags |
 
@@ -23,7 +23,9 @@ The workflow uses the standard Ubuntu runner with no paid APIs and no repository
 
 The workflow searches YouTube for the title plus “official soundtrack” and “original score.” It scores the results for title and year matches and score-related terms, filters common false matches, and attempts to download audio from the strongest candidates. Search and upload labels are heuristics. Check the credited sources before publishing, and use audio you have permission to download, edit, and publish. Credits alone do not grant those rights. Content ID may claim or block an upload.
 
-The arranger finds quieter transition points, varies the order of passages along an intensity curve, and overlaps them with variable-length equal-power crossfades. The original procedural nightscape uses a title-derived color palette and a waveform driven by the final mix. Very short sources can still sound repetitive and are rejected when there are too few usable passages for a long render.
+The arranger finds quieter transition points, varies the order of passages along an intensity curve, and overlaps them with variable-length equal-power crossfades. The eclipse drifts behind the foreground portrait while a mint-green waveform responds to the final mix. Very short sources can still sound repetitive and are rejected when there are too few usable passages for a long render.
+
+The workflow also searches for matching trailers and scene clips. It chooses a prominent face from the available footage for the foreground portrait and inserts four brief, muted scene cutaways during the hour. The score continues underneath. If no clip can be downloaded, the animated eclipse and waveform still render. If no face is detected, cutaways can still be used. The description includes separate visual credits when footage is used. Check that you also have permission to reuse the footage before uploading.
 
 YouTube sometimes rejects traffic from GitHub-hosted runners. A failed search or download fails the job with diagnostic logs. The local audio mode below uses the same production renderer if you already have the soundtrack files.
 
@@ -34,7 +36,7 @@ Install Python 3.10+, FFmpeg, and the DejaVu font package. Install Deno for YouT
 ```bash
 python -m pip install -r requirements.txt
 python render.py --title 'Example Movie (2024)'
-python render.py --title 'Example Movie (2024)' --audio cue-1.flac cue-2.mp3
+python render.py --title 'Example Movie (2024)' --audio cue-1.flac cue-2.mp3 --clips trailer.mp4
 python render.py --title 'Example Movie (2024)' --audio cue-1.flac --seconds 20 --draft
 ```
 
