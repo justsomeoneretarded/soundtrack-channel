@@ -263,3 +263,49 @@ def test_clean_composer():
     assert clean_composer("Composed primarily by Klaus Badelt, with Hans Zimmer") == "Klaus Badelt & Hans Zimmer"
     assert clean_composer("Music by John Williams") == "John Williams"
     assert clean_composer("Hans Zimmer") == "Hans Zimmer"
+
+
+def test_download_stops_when_youtube_blocks(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    calls = []
+
+    def blocked(command, **kwargs):
+        calls.append(command)
+        return sp.CompletedProcess(command, 1, stdout="",
+                                   stderr="ERROR: [youtube] x: Sign in to confirm you're not a bot.")
+
+    monkeypatch.setattr(sources.subprocess, "run", blocked)
+    candidates = [(f"aaaaaaaaa{i:02d}", (5, 120, f"Dune Soundtrack Part {i}")) for i in range(10)]
+    files, _ = sources.download_uploads(candidates, tmp_path, "bestaudio/best", 8, 2400, 10)
+    assert files == [] and len(calls) == 3
+
+
+def test_render_graph_has_no_memory_floods(monkeypatch, tmp_path):
+    """Image timelines must not pass through fps, and no input may loop endlessly.
+
+    An fps filter after a sparse image timeline emits minutes of frames at once; on a long
+    render that exhausted the runner's memory.
+    """
+    from soundtrack import video
+
+    captured = {}
+
+    def fake_run(command, **_):
+        captured["command"] = command
+        raise SystemExit  # Stop before encoding.
+
+    monkeypatch.setattr(video.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit):
+        video.render_video(tmp_path / "mix.pcm", tmp_path / "b.png", tmp_path / "e.png",
+                           tmp_path / "characters.ffconcat", [("clip.mp4", 1.0, 6.0, 100.0)],
+                           tmp_path / "out.mp4", 3600, False, "anull", tmp_path / "cards.ffconcat",
+                           None, tmp_path / "shade.png")
+    command = captured["command"]
+    graph = command[command.index("-filter_complex") + 1]
+    assert "-loop" not in command
+    for label in ("[3:v]", "[4:v]"):  # The portrait and card timelines.
+        chain = graph.split(label, 1)[1].split(";", 1)[0]
+        assert "fps=" not in chain
