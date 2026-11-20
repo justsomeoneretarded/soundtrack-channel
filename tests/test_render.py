@@ -46,6 +46,7 @@ def test_full_render(tmp_path, style):
     assert manifest["style"] == style
     assert {source["cue"] for source in manifest["audio_sources"]} == {"Cue 1", "Cue 2", "Cue 3"}
     assert manifest["loudness"] is not None
+    assert manifest["scene_cutaways"], "scenes should be chosen even from faceless footage"
     description = (out / "youtube-description.txt").read_text()
     assert "0:00" in description
     chapter_count = subprocess.check_output([

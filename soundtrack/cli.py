@@ -9,9 +9,11 @@ import time
 from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudness, prepare, write_mix
 from .common import length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
-from .sources import cue_labels, footage_for, sources_for
+from .footage import analyse, characters_for, gather, plan_scenes, portraits
+from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
-from .visuals import inspect_footage, make_art, make_vertical_art, now_playing_cards, scene_plan
+from .visuals import (character_layer, make_art, make_vertical_art, now_playing_cards,
+                      portrait_timeline, scene_shade)
 
 MAX_SECONDS = 3 * 3600
 
@@ -24,10 +26,14 @@ def parse_args(argv=None):
     parser.add_argument("--style", choices=("mix", "album"), default="mix",
                         help="mix: passages arranged along an intensity arc; album: cues play in order")
     parser.add_argument("--audio", nargs="+", type=Path, help="Local audio files for offline runs")
+    parser.add_argument("--audio-url", nargs="+", default=[],
+                        help="Audio links (direct files, Google Drive, Dropbox, or any yt-dlp site)")
     parser.add_argument("--clips", nargs="+", type=Path, help="Local trailer or scene files for visuals")
+    parser.add_argument("--characters", default="",
+                        help="Comma-separated character names to search scenes for (default: from Wikidata)")
     parser.add_argument("--seconds", type=int, default=3600)
     parser.add_argument("--minutes", type=float, help="Duration in minutes; overrides --seconds")
-    parser.add_argument("--cutaways", type=int, help="Number of scene cutaways (default: 4, 0 disables)")
+    parser.add_argument("--cutaways", type=int, help="Number of scene cutaways (default: about one every 7 minutes, 0 disables)")
     parser.add_argument("--short-seconds", type=int, default=45,
                         help="Length of the vertical Shorts teaser; 0 skips it")
     parser.add_argument("--no-loudnorm", action="store_true", help="Skip loudness normalisation")
@@ -40,6 +46,7 @@ def parse_args(argv=None):
     args.composer = " ".join(args.composer.split())
     if not terms(args.title) or len(args.title) > 160 or not 5 <= args.seconds <= MAX_SECONDS:
         parser.error(f"Provide a title of 1–160 characters and a duration of 5–{MAX_SECONDS} seconds.")
+    args.audio_url = [url for value in args.audio_url for url in value.split() if url]
     if len(args.composer) > 80:
         parser.error("Keep the composer name under 80 characters.")
     if not 0 <= args.short_seconds <= 60:
@@ -57,6 +64,8 @@ def main(argv=None):
         scratch = Path(temp)
         if args.audio:
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
+        elif args.audio_url:
+            files, credits = download_links(args.audio_url, scratch / "audio-links")
         else:
             files, credits = sources_for(title, scratch / "audio-uploads", args.composer)
         sources, passages, credits = prepare(files, credits, scratch, args.style)
@@ -65,15 +74,19 @@ def main(argv=None):
                              "Add more source audio for a long mix with variation.")
         labels = cue_labels([name for name, _ in credits], title, args.composer)
 
+        characters = [name.strip() for name in args.characters.split(",") if name.strip()]
         if args.clips:
             clip_files, clip_credits = args.clips, [(path.stem, "") for path in args.clips]
         elif args.audio:
             clip_files, clip_credits = [], []
         else:
-            clip_files, clip_credits = footage_for(title, scratch / "visual-uploads")
-        portrait, footage = inspect_footage(clip_files, clip_credits, scratch)
-        scenes = scene_plan(footage, seconds, args.cutaways)
-        visual_credits = [credit for _, _, credit in footage] if scenes or portrait is not None else []
+            characters = characters or characters_for(title)
+            clip_files, clip_credits = gather(title, scratch / "visual-uploads", characters)
+        analysis = analyse(clip_files, clip_credits, scratch / "analysis")
+        scenes, scene_details = plan_scenes(analysis, seconds, args.cutaways)
+        faces = portraits(analysis)
+        lead = next(iter(faces.values()), None)
+        visual_credits = [video.credit for video in analysis.videos] if scenes or faces else []
 
         mix = scratch / "mix.pcm"
         timeline = write_mix(mix, sources, passages, seconds, random.Random(seed), args.style)
@@ -84,14 +97,21 @@ def main(argv=None):
 
         backdrop, eclipse, character = (scratch / name for name in ("backdrop.png", "eclipse.png", "character.png"))
         preview = length_label(seconds).endswith("Preview")
-        accent = make_art(title, seed, args.out / "thumbnail.jpg", backdrop, eclipse, character, portrait,
+        accent = make_art(title, seed, args.out / "thumbnail.jpg", backdrop, eclipse, character, lead,
                           badge=None if preview else length_label(seconds))
+        layers = {}
+        for person, image in faces.items():
+            layers[person] = scratch / f"character-{len(layers)}.png"
+            character_layer(image, accent).save(layers[person])
+        portrait_list = portrait_timeline(layers, scenes, [d["character"] for d in scene_details],
+                                          seconds, scratch / "characters.ffconcat")
         cards = now_playing_cards([(start, labels[source]) for start, source in timeline],
                                   accent, scratch / "cards", seconds)
         chapter_list = chapters(args.style, timeline, labels, seconds)
         metadata = write_ffmetadata(scratch / "chapters.txt", title, chapter_list, seconds) if chapter_list else None
-        render_video(mix, backdrop, eclipse, character if portrait is not None else None, scenes,
-                     args.out / "soundtrack.mp4", seconds, args.draft, audio_filter, cards, metadata)
+        render_video(mix, backdrop, eclipse, portrait_list, scenes,
+                     args.out / "soundtrack.mp4", seconds, args.draft, audio_filter, cards, metadata,
+                     scene_shade(scratch / "shade.png") if scenes else None)
         print(f"Rendered soundtrack.mp4 after {time.monotonic() - began:.0f}s.", flush=True)
 
         short = None
@@ -100,10 +120,13 @@ def main(argv=None):
             poster = scratch / "vertical.png"
             cta = f"Full {length_label(seconds).lower()} mix on the channel" if not preview else "Full mix on the channel"
             make_vertical_art(title, args.out / "thumbnail.jpg", poster, accent, cta)
-            render_short(mix, poster, args.out / "short.mp4", start, args.short_seconds, audio_filter, args.draft)
+            best = sorted(zip(scenes, scene_details), key=lambda pair: -pair[1]["score"])[:3]
+            render_short(mix, poster, args.out / "short.mp4", start, args.short_seconds, audio_filter,
+                         args.draft, [(path, offset, length) for (path, offset, length, _), _ in best])
             short = {"file": "short.mp4", "source_start": start, "seconds": args.short_seconds}
 
         write_outputs(args.out, title=title, seconds=seconds, style=args.style, composer=args.composer,
                       timeline=timeline, labels=labels, chapter_list=chapter_list, credits=credits,
-                      visual_credits=visual_credits, loudness=loudness, scenes=scenes, short=short)
+                      visual_credits=visual_credits, loudness=loudness, scenes=scene_details, short=short,
+                      characters=characters, people=len(analysis.people))
     print(f"Finished in {time.monotonic() - began:.0f}s. Outputs are in {args.out}/.", flush=True)

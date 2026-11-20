@@ -11,9 +11,20 @@ WIDTH, HEIGHT = 1280, 720
 FFMPEG = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
 YOUTUBE = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
            "--socket-timeout", "15", "--retries", "1"]
+
 FONT_ROOT = Path(os.environ.get("SOUNDTRACK_FONT_DIR", "/usr/share/fonts/truetype/dejavu"))
 YEAR = re.compile(r"(?:19|20)\d{2}")
 WAVE_COLOR = (0x74, 0xEF, 0xB7)
+
+
+def youtube():
+    """yt-dlp command, signed in with a cookies file when SOUNDTRACK_COOKIES points to one."""
+    command = list(YOUTUBE)
+    cookies = os.environ.get("SOUNDTRACK_COOKIES", "")
+    if cookies and Path(cookies).is_file():
+        # Gentle pacing keeps a signed-in account from looking automated.
+        command += ["--cookies", cookies, "--sleep-requests", "1"]
+    return command
 
 
 def terms(value):

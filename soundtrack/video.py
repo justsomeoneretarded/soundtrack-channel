@@ -15,12 +15,32 @@ def _check_duration(output, seconds):
         raise RuntimeError(f"Expected {seconds}s, rendered {duration}s")
 
 
-def render_video(audio, backdrop, eclipse, character, scenes, output, seconds, draft,
-                 audio_filter="anull", cards=None, metadata=None):
+def _scene_inputs(scenes, first_input, width, height, fps, layer):
+    """Overlay full-frame scenes with alpha cross-dissolves. Returns (inputs, graph, layer)."""
+    inputs, graph = [], []
+    for index, (path, offset, length, when) in enumerate(scenes):
+        fade = min(0.6, length / 4)
+        inputs += ["-ss", f"{offset:.3f}", "-t", f"{length:.3f}", "-i", str(path)]
+        graph += [
+            f"[{first_input + index}:v]setpts=PTS-STARTPTS,fps={fps},"
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+            f"setsar=1,format=yuva420p,fade=t=in:st=0:d={fade:.2f}:alpha=1,"
+            f"fade=t=out:st={length - fade - 0.05:.3f}:d={fade:.2f}:alpha=1,"
+            f"setpts=PTS+{when}/TB[cut{index}]",
+            f"[{layer}][cut{index}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:"
+            f"enable='between(t,{when},{when + length})'[scene{index}]",
+        ]
+        layer = f"scene{index}"
+    return inputs, graph, layer
+
+
+def render_video(audio, backdrop, eclipse, characters, scenes, output, seconds, draft,
+                 audio_filter="anull", cards=None, metadata=None, shade=None):
+    """characters: ffconcat list of portrait layers over time, or None."""
     width, height, fps = (640, 360, 12) if draft else (WIDTH, 720, 24)
     wave_width, wave_height = round(width * 0.90), round(height * 0.083)
     ratio = width / WIDTH
-    disc_size = round((530 if character else 410) * ratio)
+    disc_size = round((530 if characters else 410) * ratio)
     inputs = [
         "-framerate", str(fps), "-i", str(backdrop),
         "-f", "f32le", "-ar", str(RATE), "-ac", "2", "-i", str(audio),
@@ -37,11 +57,11 @@ def render_video(audio, backdrop, eclipse, character, scenes, output, seconds, d
     ]
     layer = "eclipse"
     next_input = 3
-    if character:
-        inputs += ["-framerate", str(fps), "-i", str(character)]
+    if characters:
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(characters)]
         graph += [
-            f"[{next_input}:v]scale={round(420 * ratio)}:{round(462 * ratio)},format=yuva420p[portrait]",
-            "[eclipse][portrait]overlay=x=W*0.586:y=H*0.147[characters]",
+            f"[{next_input}:v]fps={fps},scale={round(420 * ratio)}:{round(462 * ratio)},format=yuva420p[portrait]",
+            "[eclipse][portrait]overlay=x=W*0.586:y=H*0.147:eof_action=repeat[characters]",
         ]
         layer = "characters"
         next_input += 1
@@ -54,6 +74,21 @@ def render_video(audio, backdrop, eclipse, character, scenes, output, seconds, d
         ]
         layer = "carded"
         next_input += 1
+    # Scenes cover the artwork; the progress bar and waveform stay on top so the music reads
+    # as continuous through every cutaway.
+    scene_inputs, scene_graph, layer = _scene_inputs(scenes, next_input, width, height, fps, layer)
+    inputs += scene_inputs
+    graph += scene_graph
+    next_input += len(scenes)
+    if scenes and shade:
+        during = "+".join(f"between(t,{when},{when + length})" for _, _, length, when in scenes)
+        inputs += ["-framerate", str(fps), "-loop", "1", "-i", str(shade)]
+        graph += [
+            f"[{next_input}:v]scale={width}:{height},format=rgba[shade]",
+            f"[{layer}][shade]overlay=0:0:shortest=0:enable='{during}'[shaded]",
+        ]
+        layer = "shaded"
+        next_input += 1
     bar_w, bar_h = round(BAR_SIZE[0] * ratio), max(2, round(BAR_SIZE[1] * ratio))
     graph += [
         f"color=c={WAVE_HEX}@0.16:s={bar_w}x{bar_h}:r={fps},format=rgba[track]",
@@ -65,56 +100,65 @@ def render_video(audio, backdrop, eclipse, character, scenes, output, seconds, d
         "y='H-h-H*0.043+H*0.01*sin(t*1.4)':eof_action=pass[visualizer]",
     ]
     layer = "visualizer"
-    scene_w = 2 * round(width * 0.91 / 2)
-    scene_h = 2 * round(height * 0.87 / 2)
-    for index, (path, offset, length, when) in enumerate(scenes):
-        inputs += ["-ss", str(offset), "-t", str(length), "-i", str(path)]
-        graph += [
-            f"[{next_input + index}:v]setpts=PTS-STARTPTS,fps={fps},"
-            f"scale={scene_w}:{scene_h}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
-            f"pad={scene_w}:{scene_h}:(ow-iw)/2:(oh-ih)/2:color=0x090e1e,format=yuva420p,"
-            f"fade=t=in:st=0:d=0.55:alpha=1,fade=t=out:st={length - 0.70}:d=0.65:alpha=1,"
-            f"setpts=PTS+{when}/TB[cut{index}]",
-            f"[{layer}][cut{index}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=pass:"
-            f"enable='between(t,{when},{when + length})'[edit{index}]",
-        ]
-        layer = f"edit{index}"
     graph += [
         f"[{layer}]fade=t=in:st=0:d=1,fade=t=out:st={max(0, seconds - 3)}:d=3,setsar=1[v]",
         f"[mix]afade=t=out:st={max(0, seconds - 5)}:d=5[a]",
     ]
     meta_args = []
     if metadata:
-        meta_index = next_input + len(scenes)
+        meta_index = next_input
         inputs += ["-f", "ffmetadata", "-i", str(metadata)]
         meta_args = ["-map_metadata", str(meta_index), "-map_chapters", str(meta_index)]
     subprocess.run(FFMPEG + [
         "-filter_complex_threads", "2", *inputs,
         "-filter_complex", ";".join(graph), "-map", "[v]", "-map", "[a]", *meta_args,
         "-t", str(seconds), "-c:v", "libx264", "-threads", "4", "-preset", "veryfast",
-        "-tune", "stillimage", "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(output),
     ], check=True)
     _check_duration(output, seconds)
 
 
-def render_short(audio, poster, output, start, seconds, audio_filter="anull", draft=False):
-    """Vertical teaser cut from the loudest stretch of the arranged mix."""
+def render_short(audio, poster, output, start, seconds, audio_filter="anull", draft=False, scenes=()):
+    """Vertical teaser cut from the loudest stretch of the arranged mix.
+
+    scenes: up to three (path, source_start, length) shown back to back in the picture panel.
+    """
     width, height, fps = (540, 960, 12) if draft else (1080, 1920, 30)
+    ratio = width / 1080
+    panel_w, panel_h = 2 * round(1000 * ratio / 2), 2 * round(562 * ratio / 2)
+    extra_inputs, scene_graph, at = [], [], 1.5
+    layer = "poster"
+    for index, (path, offset, length) in enumerate(scenes[:3]):
+        length = min(length, seconds - at - 2)
+        if length < 2:
+            break
+        extra_inputs += ["-ss", f"{offset:.3f}", "-t", f"{length:.3f}", "-i", str(path)]
+        scene_graph += [
+            f"[{2 + index}:v]setpts=PTS-STARTPTS,fps={fps},"
+            f"scale={panel_w}:{panel_h}:force_original_aspect_ratio=increase,crop={panel_w}:{panel_h},"
+            f"setsar=1,format=yuva420p,fade=t=in:st=0:d=0.4:alpha=1,"
+            f"fade=t=out:st={length - 0.45:.3f}:d=0.4:alpha=1,setpts=PTS+{at}/TB[shot{index}]",
+            f"[{layer}][shot{index}]overlay=x={round(40 * ratio)}:y={round(640 * ratio)}:eof_action=pass:"
+            f"enable='between(t,{at},{at + length})'[panel{index}]",
+        ]
+        layer = f"panel{index}"
+        at += length
     wave_w, wave_h = round(width * 0.86), round(height * 0.085)
     graph = [
         f"[0:v]scale={width}:{height},format=yuv420p,loop=-1:1:0,setpts=N[poster]",
         f"[1:a]{audio_filter},{STEREO},asplit[waveaudio][mix]",
         f"[waveaudio]aformat=channel_layouts=mono,showwaves=s={wave_w}x{wave_h}:r={fps}:"
         f"mode=cline:scale=sqrt:draw=full:colors={WAVE_HEX},format=rgba[wave]",
-        f"[poster][wave]overlay=x=(W-w)/2:y=H*0.72:eof_action=pass,"
+        *scene_graph,
+        f"[{layer}][wave]overlay=x=(W-w)/2:y=H*0.72:eof_action=pass,"
         f"fade=t=in:st=0:d=0.6,fade=t=out:st={seconds - 1.2}:d=1.2,setsar=1[v]",
         f"[mix]afade=t=in:st=0:d=1.5,afade=t=out:st={seconds - 2.5}:d=2.5[a]",
     ]
     subprocess.run(FFMPEG + [
         "-framerate", str(fps), "-i", str(poster),
         "-ss", f"{start:.3f}", "-t", str(seconds),
-        "-f", "f32le", "-ar", str(RATE), "-ac", "2", "-i", str(audio),
+        "-f", "f32le", "-ar", str(RATE), "-ac", "2", "-i", str(audio), *extra_inputs,
         "-filter_complex", ";".join(graph), "-map", "[v]", "-map", "[a]", "-t", str(seconds),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output),

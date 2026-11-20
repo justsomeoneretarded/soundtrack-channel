@@ -1,10 +1,14 @@
 """Find and download candidate audio and footage, and derive readable cue names."""
 from collections import Counter
 import json
+import os
+from pathlib import Path
 import re
 import subprocess
+import sys
+import urllib.parse
 
-from .common import YEAR, YOUTUBE, terms
+from .common import YEAR, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -17,15 +21,22 @@ GENERIC = {
 SEPARATORS = re.compile(r"\s*(?:\||｜|•|·|/|:|\s[-–—]\s|[\[\]()【】{}])\s*")
 
 
-def matching_uploads(title, queries, required, excluded, duration_limits):
+def matching_uploads(title, queries, required, excluded, duration_limits, interleave=False):
+    """Search YouTube and rank matching uploads.
+
+    With interleave, results alternate between queries so each query contributes its best
+    matches instead of the strongest query crowding out the rest.
+    """
     words = terms(title)
     core = {word for word in words if not YEAR.fullmatch(word)} or words
     requested_year = words - core
-    candidates = {}
+    candidates, per_query = {}, []
     for query in queries:
+        found = {}
+        per_query.append(found)
         try:
             result = subprocess.run(
-                YOUTUBE + ["--extractor-retries", "1", "--flat-playlist", "--dump-json",
+                youtube() + ["--extractor-retries", "1", "--flat-playlist", "--dump-json",
                            f"ytsearch12:{title} {query}"],
                 stdout=subprocess.PIPE, text=True, timeout=85,
             )
@@ -51,9 +62,22 @@ def matching_uploads(title, queries, required, excluded, duration_limits):
                 continue
             official = "official" in tokens or (item.get("channel") or "").endswith(" - Topic")
             rank = 5 * bool(requested_year & years) + 4 * official
-            rank += 2 * bool(tokens & {"soundtrack", "score", "ost", "clip"})
-            candidates[video_id] = (rank, duration, name)
-    return sorted(candidates.items(), key=lambda pair: (-pair[1][0], pair[1][1], pair[0]))
+            rank += 2 * bool(tokens & {"soundtrack", "score", "ost", "clip", "scene"})
+            if video_id not in candidates:
+                candidates[video_id] = found[video_id] = (rank, duration, name)
+
+    def ordered(group):
+        return sorted(group.items(), key=lambda pair: (-pair[1][0], pair[1][1], pair[0]))
+
+    if not interleave:
+        return ordered(candidates)
+    queues = [ordered(group) for group in per_query]
+    merged = []
+    while any(queues):
+        for queue in queues:
+            if queue:
+                merged.append(queue.pop(0))
+    return merged
 
 
 def download_uploads(candidates, scratch, stream_format, limit, budget, attempts):
@@ -68,9 +92,9 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         url = f"https://www.youtube.com/watch?v={video_id}"
         try:
             download = subprocess.run(
-                YOUTUBE + ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
+                youtube() + ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
                            "-o", str(scratch / f"{video_id}.%(ext)s"), url],
-                timeout=150,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired:
             continue
@@ -100,19 +124,47 @@ def sources_for(title, scratch, composer=""):
     )
     files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, 2400, 12)
     if not files:
-        raise SystemExit("YouTube did not return downloadable matching audio from this runner. "
-                         "Check the search and downloader errors above. "
-                         "For local rendering, supply downloadable audio with --audio.")
+        signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
+        hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "
+                "export fresh cookies (see README) and update the secret."
+                if signed_in else
+                "Add a YOUTUBE_COOKIES repository secret so the runner can sign in (see README).")
+        raise SystemExit(f"YouTube did not return downloadable matching audio ({len(candidates)} "
+                         f"matching uploads found). {hint} You can also pass audio links with the "
+                         "audio_urls workflow input or --audio-url.")
     return files, credits
 
 
-def footage_for(title, scratch):
-    candidates = matching_uploads(
-        title, ("official movie clip", "official trailer"), {"scene", "clip", "trailer"},
-        {"reaction", "fan", "remake", "recap", "breakdown", "concept", "soundtrack", "gameplay",
-         "review", "parody", "compilation", "explained", "ai"}, (20, 480),
-    )
-    return download_uploads(candidates, scratch, "bestvideo[height<=720]/best[height<=720]", 2, 480, 4)
+def download_links(urls, scratch):
+    """Download audio from direct links, Google Drive, Dropbox, or any site yt-dlp supports."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    files, credits = [], []
+    for index, url in enumerate(urls):
+        if not re.match(r"https?://", url):
+            print(f"Skipping {url!r}: links must start with http:// or https://.", file=sys.stderr)
+            continue
+        stem = f"link-{index}"
+        try:
+            result = subprocess.run(
+                youtube() + ["--no-progress", "-f", "bestaudio/best", "--max-filesize", "500M",
+                             "--print", "after_move:title", "-o", str(scratch / f"{stem}.%(ext)s"), url],
+                stdout=subprocess.PIPE, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Timed out downloading {url}.", file=sys.stderr)
+            continue
+        matches = [path for path in scratch.glob(f"{stem}.*") if path.suffix not in {".part", ".ytdl"}]
+        if result.returncode or len(matches) != 1:
+            print(f"Could not download {url}.", file=sys.stderr)
+            continue
+        name = (result.stdout.strip().splitlines() or [""])[-1].strip()
+        if not name or name.casefold() in {"download", "file", "audio"}:
+            name = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).stem or f"Track {index + 1}"
+        files.append(matches[0])
+        credits.append((name, url))
+    if not files:
+        raise SystemExit("None of the audio links could be downloaded.")
+    return files, credits
 
 
 def _parts(name):

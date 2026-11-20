@@ -134,7 +134,7 @@ def write_ffmetadata(path, title, chapter_list, seconds):
 
 
 def write_outputs(out, *, title, seconds, style, composer, timeline, labels, chapter_list,
-                  credits, visual_credits, loudness, scenes, short):
+                  credits, visual_credits, loudness, scenes, short, characters=(), people=0):
     cues = featured(timeline, labels)
     heading = video_title(title, seconds, style, composer)
     description = describe(title, seconds, style, composer, chapter_list, cues, credits, visual_credits)
@@ -155,7 +155,9 @@ def write_outputs(out, *, title, seconds, style, composer, timeline, labels, cha
         "audio_sources": [{"name": name, "url": link or None, "cue": label}
                           for (name, link), label in zip(credits, labels)],
         "visual_sources": [{"name": name, "url": link or None} for name, link in visual_credits],
-        "scene_cutaways": [{"start": when, "length": length} for _, _, length, when in scenes],
+        "character_names_searched": list(characters),
+        "recurring_characters_found": people,
+        "scene_cutaways": scenes,
         "loudness": loudness,
         "short": short,
     }

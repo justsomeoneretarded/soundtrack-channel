@@ -1,74 +1,17 @@
 """Artwork, portraits, scene selection, and on-screen overlay cards."""
 from colorsys import hsv_to_rgb
-import json
 import math
+from pathlib import Path
 import random
-import subprocess
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from .common import FFMPEG, HEIGHT, WIDTH, font
+from .common import HEIGHT, WIDTH, font
 
 CARD_SIZE = (640, 96)
 CARD_POS = (64, 462)
 BAR_POS, BAR_SIZE = (64, 566), (560, 4)
-
-
-def inspect_footage(files, credits, scratch):
-    if not files:
-        return None, []
-    import cv2
-
-    detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    best_portrait, best_score = None, -1
-    footage = []
-    for index, (path, credit) in enumerate(zip(files, credits)):
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type",
-             "-of", "json", str(path)], capture_output=True, text=True,
-        )
-        if probe.returncode:
-            continue
-        details = json.loads(probe.stdout)
-        if not any(stream["codec_type"] == "video" for stream in details.get("streams", [])):
-            continue
-        try:
-            duration = float(details["format"]["duration"])
-        except (KeyError, ValueError):
-            continue
-        if not math.isfinite(duration) or duration < 4:
-            continue
-        footage.append((path, duration, credit))
-        for fraction in (0.16, 0.30, 0.44, 0.56, 0.68, 0.79):
-            still = scratch / f"frame-{index}.jpg"
-            extracted = subprocess.run(FFMPEG + [
-                "-ss", str(duration * fraction), "-i", str(path), "-map", "0:v:0", "-frames:v", "1",
-                "-vf", "scale=800:-2", "-update", "1", str(still),
-            ])
-            if extracted.returncode or not still.exists():
-                continue
-            with Image.open(still) as image:
-                rgb = image.convert("RGB")
-            gray = cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2GRAY)
-            # Skip near-black frames from fades and title cards.
-            if float(gray.mean()) < 18:
-                continue
-            faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(48, 48))
-            for x, y, w, h in faces:
-                cx, cy = x + w / 2, y + h / 2
-                sharpness = min(1.0, cv2.Laplacian(gray[y:y + h, x:x + w], cv2.CV_64F).var() / 300)
-                score = float(w * h) * (1 - abs(cx / rgb.width - 0.5) * 0.65) * (0.4 + 0.6 * sharpness)
-                if score <= best_score:
-                    continue
-                crop_w = min(rgb.width, rgb.height * 0.91, max(210, w * 3.5))
-                crop_h = crop_w / 0.91
-                left = max(0, min(rgb.width - crop_w, cx - crop_w / 2))
-                top = max(0, min(rgb.height - crop_h, cy - crop_h * 0.37))
-                crop = rgb.crop((int(left), int(top), int(left + crop_w), int(top + crop_h)))
-                best_portrait = ImageOps.fit(crop, (420, 462), Image.Resampling.LANCZOS)
-                best_score = score
-    return best_portrait, footage
 
 
 def create_eclipse(accent):
@@ -101,29 +44,6 @@ def character_layer(portrait, accent):
     edge_alpha[-122:] = (edge_alpha[-122:] * vertical[:, None]).astype(np.uint8)
     edge.putalpha(Image.fromarray(edge_alpha))
     return Image.alpha_composite(portrait, edge)
-
-
-def scene_plan(footage, seconds, count=None):
-    """Brief muted cutaways spread through the mix: (path, source_start, length, output_start)."""
-    if not footage or seconds < 12:
-        return []
-    length = min(10, max(3, seconds * 0.10))
-    if count is None:
-        count = 4 if seconds >= 60 else 2
-    count = max(0, min(count, 12))
-    if count == 0:
-        return []
-    moments = (0.23, 0.64) if count == 2 and seconds < 60 else [
-        (index + 0.6) / (count + 0.2) * 0.92 for index in range(count)]
-    offsets = (0.25, 0.61, 0.53, 0.32, 0.72, 0.18, 0.45, 0.84, 0.38, 0.66, 0.28, 0.57)
-    setup = []
-    for index, fraction in enumerate(moments):
-        path, duration, _ = footage[index % len(footage)]
-        cut_length = min(length, duration - 1)
-        source_start = max(0, duration * offsets[index] - cut_length / 2)
-        setup.append((path, min(source_start, duration - cut_length - 0.1),
-                      cut_length, round(seconds * fraction, 3)))
-    return setup
 
 
 def wrap(text, typeface, width, max_lines):
@@ -228,30 +148,65 @@ def _card(label, accent):
     return card
 
 
-def now_playing_cards(entries, accent, scratch, seconds):
-    """Write a concat list that shows each cue name from its start time.
+def scene_shade(path):
+    """Transparent-to-dark gradient over the lower third, keeping the waveform legible on scenes."""
+    shade = np.zeros((HEIGHT, WIDTH, 4), np.uint8)
+    rows = int(HEIGHT * 0.36)
+    shade[-rows:, :, 3] = (np.linspace(0, 1, rows) ** 1.6 * 185).astype(np.uint8)[:, None]
+    shade[..., :3] = (5, 8, 20)
+    Image.fromarray(shade, "RGBA").save(path)
+    return path
 
-    entries: [(start_seconds, label)] in order. Returns the concat file path or None.
-    """
-    entries = [(start, label) for start, label in entries if start < seconds]
+
+def write_timeline(entries, seconds, listing):
+    """ffconcat list showing each image from its start time. entries: [(start, path)], sorted."""
+    entries = [(start, path) for start, path in entries if start < seconds]
+    if not entries:
+        return None
+    if entries[0][0] > 0:
+        entries[0] = (0.0, entries[0][1])
+    lines = ["ffconcat version 1.0"]
+    for index, (start, path) in enumerate(entries):
+        end = entries[index + 1][0] if index + 1 < len(entries) else seconds
+        lines += [f"file '{Path(path).as_posix()}'", f"duration {max(end - start, 0.05):.3f}"]
+    lines.append(f"file '{Path(entries[-1][1]).as_posix()}'")
+    listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return listing
+
+
+def now_playing_cards(entries, accent, scratch, seconds):
+    """Concat list that shows each cue name from its start time. entries: [(start, label)]."""
     if not entries:
         return None
     scratch.mkdir(parents=True, exist_ok=True)
     if entries[0][0] > 0:
-        entries.insert(0, (0.0, ""))
-    files = {}
-    lines = ["ffconcat version 1.0"]
-    for index, (start, label) in enumerate(entries):
-        end = entries[index + 1][0] if index + 1 < len(entries) else seconds
+        entries = [(0.0, "")] + list(entries)
+    files, timeline = {}, []
+    for start, label in entries:
         if label not in files:
-            path = scratch / f"card-{len(files)}.png"
-            _card(label, accent).save(path)
-            files[label] = path
-        lines += [f"file '{files[label].as_posix()}'", f"duration {max(end - start, 0.05):.3f}"]
-    lines.append(f"file '{files[entries[-1][1]].as_posix()}'")
-    listing = scratch / "cards.ffconcat"
-    listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return listing
+            files[label] = scratch / f"card-{len(files)}.png"
+            _card(label, accent).save(files[label])
+        timeline.append((start, files[label]))
+    return write_timeline(timeline, seconds, scratch / "cards.ffconcat")
+
+
+def portrait_timeline(layers, scenes, scene_people, seconds, listing):
+    """Swap the foreground portrait halfway through each cutaway, where the scene hides the change.
+
+    layers: {person: png path}, most important first. After a scene, the portrait shows that
+    scene's character when there is one, otherwise the next character in rotation.
+    """
+    if not layers:
+        return None
+    order = list(layers)
+    current = order[0]
+    timeline = [(0.0, layers[current])]
+    for (_, _, length, when), person in zip(scenes, scene_people):
+        following = person if person in layers else order[(order.index(current) + 1) % len(order)]
+        if following != current:
+            current = following
+            timeline.append((when + length / 2, layers[current]))
+    return write_timeline(timeline, seconds, listing)
 
 
 def make_vertical_art(title, thumbnail, output, accent, cta):

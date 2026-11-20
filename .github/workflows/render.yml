@@ -22,6 +22,16 @@ on:
         required: false
         type: string
         default: '60'
+      audio_urls:
+        description: Optional audio links (direct files, Google Drive, Dropbox), separated by spaces. Skips the YouTube audio search
+        required: false
+        type: string
+        default: ''
+      characters:
+        description: Optional comma-separated character names for scene search (default comes from Wikidata)
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -38,7 +48,8 @@ jobs:
           deno-version: v2.x
       - name: Install rendering tools
         run: |
-          python -m pip install -r requirements.txt
+          python -m pip install --upgrade -r requirements.txt
+          python -m yt_dlp --version
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
             toolkit="$RUNNER_TEMP/soundtrack-tools"
             mkdir -p "$toolkit"
@@ -64,18 +75,47 @@ jobs:
             done
             echo "SOUNDTRACK_FONT_DIR=$fonts" >> "$GITHUB_ENV"
           fi
-      - name: Find audio, arrange, and render
+      - name: Sign in to YouTube with the YOUTUBE_COOKIES secret
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          cookies="$RUNNER_TEMP/youtube-cookies.txt"
+          python -m soundtrack.cookies "$cookies"
+          if [ -f "$cookies" ]; then
+            echo "SOUNDTRACK_COOKIES=$cookies" >> "$GITHUB_ENV"
+          fi
+      - name: Start the YouTube proof-of-origin token provider
+        # Best effort: helps yt-dlp pass YouTube's bot checks. The render still runs without it.
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade bgutil-ytdlp-pot-provider
+          docker run --detach --init --name bgutil-provider -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          sleep 5
+          docker ps --filter name=bgutil-provider --format '{{.Status}}'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/soundtrack-models
+          key: face-models-48b10fa
+      - name: Find audio and scenes, arrange, and render
         env:
           SOUNDTRACK_TITLE: ${{ inputs.title }}
           SOUNDTRACK_COMPOSER: ${{ inputs.composer }}
           SOUNDTRACK_STYLE: ${{ inputs.style }}
           SOUNDTRACK_MINUTES: ${{ inputs.minutes }}
+          SOUNDTRACK_AUDIO_URLS: ${{ inputs.audio_urls }}
+          SOUNDTRACK_CHARACTERS: ${{ inputs.characters }}
         run: |
           case "$SOUNDTRACK_MINUTES" in
             ''|*[!0-9]*) echo "::error::minutes must be a whole number" >&2; exit 1 ;;
           esac
+          extra=()
+          if [ -n "${SOUNDTRACK_AUDIO_URLS// }" ]; then extra+=(--audio-url "$SOUNDTRACK_AUDIO_URLS"); fi
+          if [ -n "${SOUNDTRACK_CHARACTERS// }" ]; then extra+=(--characters "$SOUNDTRACK_CHARACTERS"); fi
           python render.py --title="$SOUNDTRACK_TITLE" --composer="$SOUNDTRACK_COMPOSER" \
-            --style="$SOUNDTRACK_STYLE" --minutes="$SOUNDTRACK_MINUTES"
+            --style="$SOUNDTRACK_STYLE" --minutes="$SOUNDTRACK_MINUTES" "${extra[@]}"
+      - name: Remove the cookies file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/youtube-cookies.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: soundtrack-video
