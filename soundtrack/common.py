@@ -17,14 +17,19 @@ YEAR = re.compile(r"(?:19|20)\d{2}")
 WAVE_COLOR = (0x74, 0xEF, 0xB7)
 
 
-def youtube():
+def youtube(signed_in=True):
     """yt-dlp command, signed in with a cookies file when SOUNDTRACK_COOKIES points to one."""
     command = list(YOUTUBE)
     cookies = os.environ.get("SOUNDTRACK_COOKIES", "")
-    if cookies and Path(cookies).is_file():
+    if signed_in and cookies and Path(cookies).is_file():
         # Gentle pacing keeps a signed-in account from looking automated.
         command += ["--cookies", cookies, "--sleep-requests", "1"]
     return command
+
+
+def signed_in():
+    cookies = os.environ.get("SOUNDTRACK_COOKIES", "")
+    return bool(cookies and Path(cookies).is_file())
 
 
 def terms(value):

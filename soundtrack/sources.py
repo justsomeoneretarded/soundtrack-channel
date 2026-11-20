@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.parse
 
-from .common import YEAR, terms, youtube
+from .common import YEAR, signed_in, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -22,15 +22,37 @@ GENERIC = {
 SEPARATORS = re.compile(r"\s*(?:\||｜|•|·|/|:|\s[-–—]\s|[\[\]()【】{}])\s*")
 
 
-def matching_uploads(title, queries, required, excluded, duration_limits, interleave=False):
+LINKING_WORDS = {"the", "of", "a", "an", "and", "in", "on", "at", "to", "for"}
+
+
+def title_parts(title):
+    """('Pirates of the Caribbean', 'The Curse of the Black Pearl') from a full title.
+
+    Uploads usually name the franchise but often drop the subtitle, so only the main part is
+    required to match; the subtitle raises the rank.
+    """
+    bare = re.sub(r"[(\[]?\b(?:19|20)\d{2}\b[)\]]?", " ", title)
+    parts = re.split(r"\s*(?::|\s[-–—]\s)\s*", bare.strip(), maxsplit=1)
+    main, subtitle = parts[0], parts[1] if len(parts) > 1 else ""
+    main_terms = terms(main) or terms(title)
+    sub_terms = terms(subtitle) - LINKING_WORDS
+    return main_terms, sub_terms
+
+
+def matching_uploads(title, queries, required, excluded, duration_limits, interleave=False,
+                     artists=()):
     """Search YouTube and rank matching uploads.
 
+    An upload must name the work's main title (the subtitle is a bonus). Uploads from an
+    artist's auto-generated "Topic" channel are accepted for the given artists even when the
+    track name doesn't mention the work, since those are official releases.
     With interleave, results alternate between queries so each query contributes its best
     matches instead of the strongest query crowding out the rest.
     """
     words = terms(title)
-    core = {word for word in words if not YEAR.fullmatch(word)} or words
-    requested_year = words - core
+    requested_year = {word for word in words if YEAR.fullmatch(word)}
+    main_terms, sub_terms = title_parts(title)
+    artist_terms = [terms(artist) for artist in artists if terms(artist)]
     candidates, per_query = {}, []
     for query in queries:
         found = {}
@@ -38,7 +60,7 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
         try:
             result = subprocess.run(
                 youtube() + ["--extractor-retries", "1", "--flat-playlist", "--dump-json",
-                           f"ytsearch12:{title} {query}"],
+                             f"ytsearch15:{title} {query}"],
                 stdout=subprocess.PIPE, text=True, timeout=85,
             )
         except subprocess.TimeoutExpired:
@@ -52,20 +74,31 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
             tokens = terms(name)
             duration = item.get("duration") or 0
             video_id = item.get("id") or ""
+            channel = item.get("channel") or item.get("uploader") or ""
             if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
                 continue
-            if not core <= tokens or not duration_limits[0] <= duration <= duration_limits[1]:
+            if not duration_limits[0] <= duration <= duration_limits[1] or tokens & excluded:
                 continue
-            if tokens & excluded or not tokens & required:
+            topic = channel.endswith(" - Topic")
+            channel_terms = terms(channel[:-len(" - Topic")]) if topic else set()
+            artist_topic = bool(channel_terms) and any(
+                artist <= channel_terms or channel_terms <= artist for artist in artist_terms)
+            names_work = main_terms <= tokens
+            if not (names_work and tokens & required) and not artist_topic:
                 continue
             years = {token for token in tokens if YEAR.fullmatch(token)}
             if requested_year and years and not requested_year & years:
                 continue
-            official = "official" in tokens or (item.get("channel") or "").endswith(" - Topic")
+            official = "official" in tokens or topic
             rank = 5 * bool(requested_year & years) + 4 * official
             rank += 2 * bool(tokens & {"soundtrack", "score", "ost", "clip", "scene"})
+            if sub_terms:
+                rank += 6 if sub_terms <= tokens else 2 * (len(sub_terms & tokens) * 2 >= len(sub_terms))
+            if not names_work:
+                rank -= 3  # Official artist track without the work's name: plausible but unconfirmed.
             if video_id not in candidates:
                 candidates[video_id] = found[video_id] = (rank, duration, name)
+    print(f"Found {len(candidates)} matching uploads.", flush=True)
 
     def ordered(group):
         return sorted(group.items(), key=lambda pair: (-pair[1][0], pair[1][1], pair[0]))
@@ -81,8 +114,9 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
     return merged
 
 
-BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|"
-                     r"this content isn.t available|po token", re.IGNORECASE)
+BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|po token",
+                     re.IGNORECASE)
+UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORECASE)
 
 
 def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240,
@@ -108,12 +142,17 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         url = f"https://www.youtube.com/watch?v={video_id}"
         began = time.monotonic()
         print(f"Downloading {name!r} ({duration:.0f}s)…", flush=True)
+        command = ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
+                   "-o", str(scratch / f"{video_id}.%(ext)s"), url]
         try:
-            download = subprocess.run(
-                youtube() + ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
-                             "-o", str(scratch / f"{video_id}.%(ext)s"), url],
-                stderr=subprocess.PIPE, text=True, timeout=min(timeout, remaining),
-            )
+            download = subprocess.run(youtube() + command, stderr=subprocess.PIPE, text=True,
+                                      timeout=min(timeout, remaining))
+            if download.returncode and signed_in() and UNAVAILABLE.search(download.stderr or ""):
+                # YouTube sometimes withholds a video from a signed-in session it is limiting
+                # while still serving it to signed-out requests (with the PO token provider).
+                print("  unavailable while signed in; retrying signed out.", file=sys.stderr, flush=True)
+                download = subprocess.run(youtube(signed_in=False) + command, stderr=subprocess.PIPE,
+                                          text=True, timeout=min(timeout, max(20, stop_at - time.monotonic())))
         except subprocess.TimeoutExpired:
             print(f"  timed out after {time.monotonic() - began:.0f}s.", file=sys.stderr, flush=True)
             continue
@@ -150,10 +189,13 @@ def sources_for(title, scratch, composer=""):
         title, queries,
         {"soundtrack", "score", "ost", "theme", "music", "suite"},
         {"trailer", "reaction", "cover", "karaoke", "remake", "slowed", "extended", "remix", "loop",
-         "piano", "tutorial", "sped", "8d", "nightcore", "lofi"},
-        (30, 7200),
+         "piano", "tutorial", "sped", "8d", "nightcore", "lofi", "arr", "arranged", "arrangement",
+         "band", "concert", "live", "guitar", "violin", "cello", "ukulele", "flute", "ocarina", "drum",
+         "drums", "marimba", "kalimba", "synthesia", "midi", "8bit", "orgel", "accordion", "harp",
+         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"},
+        (30, 7200), artists=[part for part in composer.split(" & ") if part],
     )
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, 2400, 12)
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, 2400, 16)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "
