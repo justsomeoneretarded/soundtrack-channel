@@ -6,12 +6,28 @@ on:
         description: Movie or show title, optionally followed by its release year
         required: true
         type: string
+      composer:
+        description: Composer (optional; improves search, titles, and tags)
+        required: false
+        type: string
+        default: ''
+      style:
+        description: "mix: passages arranged along an intensity arc. album: cues play in full, in order, with a tracklist"
+        required: false
+        type: choice
+        options: [mix, album]
+        default: mix
+      minutes:
+        description: Video length in minutes (1–180)
+        required: false
+        type: string
+        default: '60'
 permissions:
   contents: read
 jobs:
   render:
     runs-on: ${{ vars.SOUNDTRACK_RUNNER_LABEL || 'ubuntu-24.04' }}
-    timeout-minutes: 75
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,7 +67,15 @@ jobs:
       - name: Find audio, arrange, and render
         env:
           SOUNDTRACK_TITLE: ${{ inputs.title }}
-        run: python render.py --title="$SOUNDTRACK_TITLE"
+          SOUNDTRACK_COMPOSER: ${{ inputs.composer }}
+          SOUNDTRACK_STYLE: ${{ inputs.style }}
+          SOUNDTRACK_MINUTES: ${{ inputs.minutes }}
+        run: |
+          case "$SOUNDTRACK_MINUTES" in
+            ''|*[!0-9]*) echo "::error::minutes must be a whole number" >&2; exit 1 ;;
+          esac
+          python render.py --title="$SOUNDTRACK_TITLE" --composer="$SOUNDTRACK_COMPOSER" \
+            --style="$SOUNDTRACK_STYLE" --minutes="$SOUNDTRACK_MINUTES"
       - uses: actions/upload-artifact@v4
         with:
           name: soundtrack-video
