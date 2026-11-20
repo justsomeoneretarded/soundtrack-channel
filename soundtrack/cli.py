@@ -57,11 +57,17 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     began = time.monotonic()
+
+    def stage(message):
+        elapsed = int(time.monotonic() - began)
+        print(f"[{elapsed // 60:02d}:{elapsed % 60:02d}] {message}", flush=True)
+
     title, seconds = args.title, args.seconds
     seed = int.from_bytes(hashlib.sha256(title.encode()).digest()[:8], "big")
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soundtrack-") as temp:
         scratch = Path(temp)
+        stage("Finding audio.")
         if args.audio:
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
         elif args.audio_url:
@@ -74,6 +80,7 @@ def main(argv=None):
                              "Add more source audio for a long mix with variation.")
         labels = cue_labels([name for name, _ in credits], title, args.composer)
 
+        stage(f"Prepared {len(passages)} passages from {len(credits)} sources. Finding scenes.")
         characters = [name.strip() for name in args.characters.split(",") if name.strip()]
         if args.clips:
             clip_files, clip_credits = args.clips, [(path.stem, "") for path in args.clips]
@@ -82,12 +89,14 @@ def main(argv=None):
         else:
             characters = characters or characters_for(title)
             clip_files, clip_credits = gather(title, scratch / "visual-uploads", characters)
+        stage(f"Analysing {len(clip_files)} videos.")
         analysis = analyse(clip_files, clip_credits, scratch / "analysis")
         scenes, scene_details = plan_scenes(analysis, seconds, args.cutaways)
         faces = portraits(analysis)
         lead = next(iter(faces.values()), None)
         visual_credits = [video.credit for video in analysis.videos] if scenes or faces else []
 
+        stage(f"Chose {len(scenes)} scenes and {len(faces)} character portraits. Arranging the mix.")
         mix = scratch / "mix.pcm"
         timeline = write_mix(mix, sources, passages, seconds, random.Random(seed), args.style)
         loudness = None if args.no_loudnorm else measure_loudness(mix)
@@ -107,6 +116,7 @@ def main(argv=None):
                                           seconds, scratch / "characters.ffconcat")
         cards = now_playing_cards([(start, labels[source]) for start, source in timeline],
                                   accent, scratch / "cards", seconds)
+        stage("Rendering the video.")
         chapter_list = chapters(args.style, timeline, labels, seconds)
         metadata = write_ffmetadata(scratch / "chapters.txt", title, chapter_list, seconds) if chapter_list else None
         render_video(mix, backdrop, eclipse, portrait_list, scenes,

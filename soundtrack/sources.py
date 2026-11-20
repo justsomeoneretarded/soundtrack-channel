@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 
 from .common import YEAR, terms, youtube
@@ -80,28 +81,58 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
     return merged
 
 
-def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240):
+BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|"
+                     r"this content isn.t available|po token", re.IGNORECASE)
+
+
+def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240,
+                     deadline_minutes=12):
+    """Download the best candidates within a time limit.
+
+    Stops early when YouTube keeps answering with sign-in or rate-limit checks, so a blocked
+    runner fails in minutes instead of waiting out every timeout.
+    """
     scratch.mkdir(parents=True, exist_ok=True)
     files, credits = [], []
     used_names = set()
-    seconds = 0
+    seconds, blocked = 0, 0
+    stop_at = time.monotonic() + deadline_minutes * 60
     for video_id, (_, duration, name) in candidates[:attempts]:
         signature = frozenset(terms(name))
         if signature in used_names:
             continue
+        remaining = stop_at - time.monotonic()
+        if remaining < 20:
+            print(f"Stopped downloading after {deadline_minutes} minutes.", file=sys.stderr, flush=True)
+            break
         url = f"https://www.youtube.com/watch?v={video_id}"
+        began = time.monotonic()
+        print(f"Downloading {name!r} ({duration:.0f}s)…", flush=True)
         try:
             download = subprocess.run(
                 youtube() + ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
-                           "-o", str(scratch / f"{video_id}.%(ext)s"), url],
-                timeout=timeout,
+                             "-o", str(scratch / f"{video_id}.%(ext)s"), url],
+                stderr=subprocess.PIPE, text=True, timeout=min(timeout, remaining),
             )
         except subprocess.TimeoutExpired:
+            print(f"  timed out after {time.monotonic() - began:.0f}s.", file=sys.stderr, flush=True)
             continue
+        errors = (download.stderr or "").strip()
         matches = [path for path in scratch.glob(f"{video_id}.*")
                    if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".temp")]
         if download.returncode or len(matches) != 1:
+            reason = next((line for line in reversed(errors.splitlines()) if "ERROR" in line),
+                          errors.splitlines()[-1] if errors else f"exit code {download.returncode}")
+            print(f"  failed: {reason[:300]}", file=sys.stderr, flush=True)
+            blocked = blocked + 1 if BLOCKED.search(errors) else 0
+            if blocked >= 3:
+                print("YouTube is refusing this runner (sign-in or rate-limit check on three uploads "
+                      "in a row). Refresh the YOUTUBE_COOKIES secret or use audio_urls.",
+                      file=sys.stderr, flush=True)
+                break
             continue
+        blocked = 0
+        print(f"  done in {time.monotonic() - began:.0f}s.", flush=True)
         files.append(matches[0])
         credits.append((name, url))
         used_names.add(signature)

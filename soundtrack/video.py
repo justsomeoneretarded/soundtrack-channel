@@ -60,7 +60,9 @@ def render_video(audio, backdrop, eclipse, characters, scenes, output, seconds, 
     if characters:
         inputs += ["-f", "concat", "-safe", "0", "-i", str(characters)]
         graph += [
-            f"[{next_input}:v]fps={fps},scale={round(420 * ratio)}:{round(462 * ratio)},format=yuva420p[portrait]",
+            # No fps filter on image timelines: it would emit every repeated frame up to the next
+            # image at once (minutes of video) and exhaust memory. Overlay holds the last image.
+            f"[{next_input}:v]scale={round(420 * ratio)}:{round(462 * ratio)},format=yuva420p[portrait]",
             "[eclipse][portrait]overlay=x=W*0.586:y=H*0.147:eof_action=repeat[characters]",
         ]
         layer = "characters"
@@ -68,7 +70,7 @@ def render_video(audio, backdrop, eclipse, characters, scenes, output, seconds, 
     if cards:
         inputs += ["-f", "concat", "-safe", "0", "-i", str(cards)]
         graph += [
-            f"[{next_input}:v]fps={fps},scale=iw*{ratio:.5f}:-2,format=rgba[cards]",
+            f"[{next_input}:v]scale=iw*{ratio:.5f}:-2,format=rgba[cards]",
             f"[{layer}][cards]overlay=x={round(CARD_POS[0] * ratio)}:y={round(CARD_POS[1] * ratio)}:"
             "eof_action=repeat[carded]",
         ]
@@ -82,9 +84,11 @@ def render_video(audio, backdrop, eclipse, characters, scenes, output, seconds, 
     next_input += len(scenes)
     if scenes and shade:
         during = "+".join(f"between(t,{when},{when + length})" for _, _, length, when in scenes)
-        inputs += ["-framerate", str(fps), "-loop", "1", "-i", str(shade)]
+        # Decode the image once and repeat it inside the graph. An endlessly looping image
+        # input is decoded far faster than it is used and fills memory within seconds.
+        inputs += ["-framerate", str(fps), "-i", str(shade)]
         graph += [
-            f"[{next_input}:v]scale={width}:{height},format=rgba[shade]",
+            f"[{next_input}:v]scale={width}:{height},format=rgba,loop=-1:1:0,setpts=N[shade]",
             f"[{layer}][shade]overlay=0:0:shortest=0:enable='{during}'[shaded]",
         ]
         layer = "shaded"
