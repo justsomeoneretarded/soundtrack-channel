@@ -309,3 +309,62 @@ def test_render_graph_has_no_memory_floods(monkeypatch, tmp_path):
     for label in ("[3:v]", "[4:v]"):  # The portrait and card timelines.
         chain = graph.split(label, 1)[1].split(";", 1)[0]
         assert "fps=" not in chain
+
+
+def _fake_search(monkeypatch, items):
+    import json as jsonlib
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    def fake_run(command, **_):
+        lines = [jsonlib.dumps({"id": vid, "title": name, "duration": 150, "channel": channel})
+                 for vid, name, channel in items]
+        return sp.CompletedProcess(command, 0, stdout="\n".join(lines))
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    return sources
+
+
+def test_audio_search_accepts_franchise_titles_and_official_artist_tracks(monkeypatch):
+    sources = _fake_search(monkeypatch, [
+        ("aaaaaaaaaa1", "Pirates of the Caribbean - He's a Pirate (Soundtrack)", "Some Uploader"),
+        ("aaaaaaaaaa2", "Pirates of the Caribbean: The Curse of the Black Pearl - Main Theme", "Some Uploader"),
+        ("aaaaaaaaaa3", "The Medallion Calls", "Klaus Badelt - Topic"),
+        ("aaaaaaaaaa4", "Time", "Some Other Artist - Topic"),
+        ("aaaaaaaaaa5", "Pirates of the Caribbean, arr. Bernotas - Concert Band score", "Band Music"),
+        ("aaaaaaaaaa6", "He's a Pirate - Piano Tutorial (Pirates of the Caribbean soundtrack)", "Piano"),
+    ])
+    found = sources.matching_uploads(
+        "Pirates of the Caribbean: The Curse of the Black Pearl (2003)", ["official soundtrack"],
+        {"soundtrack", "score", "ost", "theme", "music"},
+        {"piano", "tutorial", "arr", "band", "concert"}, (30, 7200),
+        artists=["Klaus Badelt", "Hans Zimmer"])
+    ids = [vid for vid, _ in found]
+    assert ids[0] == "aaaaaaaaaa2"  # The subtitle match ranks first.
+    assert set(ids) == {"aaaaaaaaaa1", "aaaaaaaaaa2", "aaaaaaaaaa3"}
+
+
+def test_unavailable_download_retries_signed_out(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setenv("SOUNDTRACK_COOKIES", str(cookies))
+    calls = []
+
+    def fake_run(command, **_):
+        calls.append("--cookies" in command)
+        if "--cookies" in command:
+            return sp.CompletedProcess(command, 1, stdout="",
+                                       stderr="ERROR: [youtube] x: Video unavailable. This content isn’t available.")
+        target = command[command.index("-o") + 1].replace("%(ext)s", "m4a")
+        open(target, "w").close()
+        return sp.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 120, "Dune Soundtrack"))],
+                                        tmp_path / "a", "bestaudio/best", 8, 2400, 12)
+    assert calls == [True, False] and len(files) == 1
