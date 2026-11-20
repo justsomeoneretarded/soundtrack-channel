@@ -92,6 +92,40 @@ jobs:
           docker run --detach --init --name bgutil-provider -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
           sleep 5
           docker ps --filter name=bgutil-provider --format '{{.Status}}'
+      - name: Route YouTube traffic through Cloudflare WARP or the YOUTUBE_PROXY secret
+        # YouTube refuses video and audio to GitHub's runner addresses. A YOUTUBE_PROXY secret
+        # takes priority; otherwise Cloudflare WARP runs as a local SOCKS proxy.
+        continue-on-error: true
+        env:
+          YOUTUBE_PROXY: ${{ secrets.YOUTUBE_PROXY }}
+        run: |
+          if [ -n "$YOUTUBE_PROXY" ]; then
+            echo "::add-mask::$YOUTUBE_PROXY"
+            echo "SOUNDTRACK_PROXY=$YOUTUBE_PROXY" >> "$GITHUB_ENV"
+            echo "Using the YOUTUBE_PROXY secret."
+            exit 0
+          fi
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg |
+            sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" |
+            sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cloudflare-warp
+          for i in $(seq 1 20); do warp-cli --accept-tos status >/dev/null 2>&1 && break; sleep 1; done
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos proxy port 40000
+          warp-cli --accept-tos connect
+          for i in $(seq 1 30); do
+            if curl -s --max-time 5 -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q 'warp=on'; then
+              echo "SOUNDTRACK_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
+              echo "Cloudflare WARP is connected."
+              exit 0
+            fi
+            sleep 2
+          done
+          warp-cli --accept-tos status || true
+          echo "::warning::Cloudflare WARP did not connect; downloads will go out directly."
       - uses: actions/cache@v4
         with:
           path: ~/.cache/soundtrack-models

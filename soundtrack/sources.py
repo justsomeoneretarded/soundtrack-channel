@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.parse
 
-from .common import YEAR, signed_in, terms, youtube
+from .common import YEAR, download_routes, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -145,14 +145,18 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         command = ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
         try:
-            download = subprocess.run(youtube() + command, stderr=subprocess.PIPE, text=True,
-                                      timeout=min(timeout, remaining))
-            if download.returncode and signed_in() and UNAVAILABLE.search(download.stderr or ""):
-                # YouTube sometimes withholds a video from a signed-in session it is limiting
-                # while still serving it to signed-out requests (with the PO token provider).
-                print("  unavailable while signed in; retrying signed out.", file=sys.stderr, flush=True)
-                download = subprocess.run(youtube(signed_in=False) + command, stderr=subprocess.PIPE,
-                                          text=True, timeout=min(timeout, max(20, stop_at - time.monotonic())))
+            for attempt, (with_cookies, with_proxy) in enumerate(download_routes()):
+                if attempt:
+                    route = (("signed in" if with_cookies else "signed out")
+                             + (" through the proxy" if with_proxy else " directly"))
+                    print(f"  retrying {route}.", file=sys.stderr, flush=True)
+                download = subprocess.run(
+                    youtube(signed_in=with_cookies, proxy=with_proxy) + command,
+                    stderr=subprocess.PIPE, text=True,
+                    timeout=min(timeout, max(20, stop_at - time.monotonic())))
+                if not download.returncode or not (UNAVAILABLE.search(download.stderr or "")
+                                                   or BLOCKED.search(download.stderr or "")):
+                    break
         except subprocess.TimeoutExpired:
             print(f"  timed out after {time.monotonic() - began:.0f}s.", file=sys.stderr, flush=True)
             continue

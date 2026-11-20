@@ -368,3 +368,19 @@ def test_unavailable_download_retries_signed_out(monkeypatch, tmp_path):
     files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 120, "Dune Soundtrack"))],
                                         tmp_path / "a", "bestaudio/best", 8, 2400, 12)
     assert calls == [True, False] and len(files) == 1
+
+
+def test_download_routes(monkeypatch, tmp_path):
+    from soundtrack.common import download_routes, youtube
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    monkeypatch.setenv("SOUNDTRACK_COOKIES", str(cookies))
+    monkeypatch.setenv("SOUNDTRACK_PROXY", "socks5://127.0.0.1:40000")
+    assert download_routes() == [(True, True), (False, True), (True, False)]
+    assert youtube()[-2:] == ["--proxy", "socks5://127.0.0.1:40000"]
+    assert "--proxy" not in youtube(proxy=False)
+    monkeypatch.delenv("SOUNDTRACK_PROXY")
+    assert download_routes() == [(True, False), (False, False)]
+    monkeypatch.delenv("SOUNDTRACK_COOKIES")
+    assert download_routes() == [(False, False)]
