@@ -163,6 +163,8 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
             reason = next((line for line in reversed(errors.splitlines()) if "ERROR" in line),
                           errors.splitlines()[-1] if errors else f"exit code {download.returncode}")
             print(f"  failed: {reason[:300]}", file=sys.stderr, flush=True)
+            for warning in [line for line in errors.splitlines() if line.startswith("WARNING")][:4]:
+                print(f"    {warning[:300]}", file=sys.stderr, flush=True)
             blocked = blocked + 1 if BLOCKED.search(errors) else 0
             if blocked >= 3:
                 print("YouTube is refusing this runner (sign-in or rate-limit check on three uploads "
