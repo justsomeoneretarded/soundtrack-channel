@@ -32,6 +32,18 @@ def terms(value):
     return set(re.findall(r"[^\W_]+", value))
 
 
+def clean_composer(text):
+    """'Composed primarily by Klaus Badelt, with Hans Zimmer' -> 'Klaus Badelt & Hans Zimmer'."""
+    text = " ".join(text.split())
+    text = re.sub(r"(?i)\b(?:original\s+)?(?:music|score|soundtrack)?\s*(?:composed|written|scored|"
+                  r"music|score)\s+(?:primarily\s+|mainly\s+|mostly\s+|largely\s+)?by\s+", "", text)
+    text = re.sub(r"(?i)^(?:by|music|composer|composers)\s*:?\s+", "", text)
+    text = re.sub(r"(?i)\s*(?:,\s*(?:with|and)\s+|\s+with\s+|\s+and\s+|,\s+|\s*/\s*|\s*\+\s*)",
+                  " & ", text)
+    text = re.sub(r"(?i)\s*\((?:with|additional)[^)]*\)", "", text)
+    return text.strip(" ,;&.")
+
+
 def font(name, size):
     from PIL import ImageFont
 
