@@ -7,7 +7,7 @@ import tempfile
 import time
 
 from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudness, prepare, write_mix
-from .common import length_label, terms
+from .common import clean_composer, length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
 from .footage import analyse, characters_for, gather, plan_scenes, portraits
 from .sources import cue_labels, download_links, sources_for
@@ -43,7 +43,7 @@ def parse_args(argv=None):
     if args.minutes is not None:
         args.seconds = round(args.minutes * 60)
     args.title = " ".join(args.title.split())
-    args.composer = " ".join(args.composer.split())
+    args.composer = clean_composer(args.composer)
     if not terms(args.title) or len(args.title) > 160 or not 5 <= args.seconds <= MAX_SECONDS:
         parser.error(f"Provide a title of 1–160 characters and a duration of 5–{MAX_SECONDS} seconds.")
     args.audio_url = [url for value in args.audio_url for url in value.split() if url]

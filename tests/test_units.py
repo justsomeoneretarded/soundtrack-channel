@@ -226,3 +226,40 @@ def test_search_interleaves_queries(monkeypatch):
     found = sources.matching_uploads("Dune", list(results), {"scene", "trailer"}, set(), (20, 900),
                                      interleave=True)
     assert [vid for vid, _ in found] == ["aaaaaaaaaa1", "bbbbbbbbbb1", "aaaaaaaaaa2"]
+
+
+def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
+    """Exercise the YouTube download code that live runs use, without the network."""
+    import subprocess as sp
+
+    from soundtrack import footage, sources
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs.get("timeout")))
+        target = command[command.index("-o") + 1].replace("%(ext)s", "m4a")
+        open(target, "w").close()
+        return sp.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    candidates = [("aaaaaaaaaa1", (5, 120, "Dune Official Soundtrack")),
+                  ("aaaaaaaaaa2", (4, 90, "Dune Main Theme"))]
+    files, credits = sources.download_uploads(candidates, tmp_path / "a", "bestaudio/best", 8, 2400, 12)
+    assert len(files) == 2 and credits[0][1].endswith("aaaaaaaaaa1") and calls[0][1] == 240
+
+    monkeypatch.setattr(footage, "matching_uploads", lambda *args, **kwargs: candidates)
+    files, _ = footage.gather("Dune", tmp_path / "v", ["Paul Atreides"])
+    assert len(files) == 2 and calls[-1][1] == 300
+
+    monkeypatch.setattr(sources, "matching_uploads", lambda *args, **kwargs: candidates)
+    files, _ = sources.sources_for("Dune", tmp_path / "s", "Hans Zimmer")
+    assert len(files) == 2
+
+
+def test_clean_composer():
+    from soundtrack.common import clean_composer
+
+    assert clean_composer("Composed primarily by Klaus Badelt, with Hans Zimmer") == "Klaus Badelt & Hans Zimmer"
+    assert clean_composer("Music by John Williams") == "John Williams"
+    assert clean_composer("Hans Zimmer") == "Hans Zimmer"

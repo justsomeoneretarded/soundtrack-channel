@@ -241,8 +241,6 @@ def _frontal(row):
 
 
 def _faces_in(frame, gray, detector, recognizer, cascade):
-    import cv2
-
     found = []
     if detector is not None:
         detector.setInputSize((frame.shape[1], frame.shape[0]))

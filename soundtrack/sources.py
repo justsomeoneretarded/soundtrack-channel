@@ -80,7 +80,7 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
     return merged
 
 
-def download_uploads(candidates, scratch, stream_format, limit, budget, attempts):
+def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240):
     scratch.mkdir(parents=True, exist_ok=True)
     files, credits = [], []
     used_names = set()
