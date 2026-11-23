@@ -254,6 +254,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
     assert len(files) == 2 and calls[-1][1] == 300
 
     monkeypatch.setattr(sources, "matching_uploads", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(sources, "audible_span", lambda path: 120.0)
     files, _ = sources.sources_for("Dune", tmp_path / "s", "Hans Zimmer")
     assert len(files) == 2
 
@@ -515,3 +516,20 @@ def test_truncated_copy_retries_as_another_client(monkeypatch, tmp_path):
                                         tmp_path / "a", "bestaudio/best", 8, 4800, 12)
     assert len(files) == 1 and len(commands) == 2
     assert "youtube:player_client=web_safari" in commands[1]
+
+
+def test_audible_span_ignores_a_silent_tail(tmp_path):
+    import shutil
+    import subprocess as sp
+
+    from soundtrack.common import audible_span, media_length
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is required")
+    path = tmp_path / "silent-tail.webm"
+    sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=60", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=240",
+            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1", "-c:a", "libopus", "-b:a", "64k",
+            str(path)], check=True)
+    assert abs(media_length(path) - 300) < 2  # All the data is there...
+    assert abs(audible_span(path) - 60) < 3   # ...but only a minute of it is sound.

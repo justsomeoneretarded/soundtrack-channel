@@ -10,7 +10,8 @@ import time
 import unicodedata
 import urllib.parse
 
-from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_length, terms, youtube
+from .common import (MAX_SOURCE_SECONDS, YEAR, audible_span, download_routes, media_length, terms,
+                     youtube)
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -159,7 +160,7 @@ UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORE
 
 
 def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240,
-                     deadline_minutes=12):
+                     deadline_minutes=12, audio=False):
     """Download the best candidates within a time limit.
 
     Stops early when YouTube keeps answering with sign-in or rate-limit checks, so a blocked
@@ -205,7 +206,11 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                     timeout=min(timeout, max(20, stop_at - time.monotonic())))
                 if not download.returncode:
                     got = _downloaded(scratch, video_id)
-                    length = (media_length(got) or 0) if got else 0
+                    # For music, count only the stretch that has sound: some copies run the full
+                    # length but fall silent partway.
+                    length = ((audible_span(got) if audio else media_length(got)) or 0) if got else 0
+                    if audio:
+                        duration = min(duration, MAX_SOURCE_SECONDS)
                     if got and (duration <= 30 or length >= duration * 0.85):
                         if best:
                             best[1].unlink(missing_ok=True)  # Drop the earlier, shorter copy.
@@ -290,7 +295,7 @@ def sources_for(title, scratch, composer="", seconds=3600, others=()):
     )
     # Gather at least as much distinct music as the video is long (capped), from several uploads.
     budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16)
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16, audio=True)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "

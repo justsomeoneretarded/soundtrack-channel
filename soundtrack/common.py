@@ -114,6 +114,28 @@ def media_length(path):
     return None
 
 
+def audible_span(path, limit=MAX_SOURCE_SECONDS):
+    """Seconds from the first to the last audible moment of the first audio stream.
+
+    YouTube can serve a file whose packets run the full length but fall silent partway, so
+    this listens (8 kHz mono, about three seconds per 45 minutes) instead of counting data.
+    """
+    import numpy as np
+
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-map", "0:a:0",
+         "-t", str(limit), "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+        capture_output=True,
+    )
+    samples = np.frombuffer(result.stdout, dtype="<i2").astype(np.float32) / 32768
+    seconds = len(samples) // 8000
+    if seconds < 1:
+        return 0.0
+    rms = np.sqrt(np.mean(np.square(samples[:seconds * 8000].reshape(seconds, 8000)), axis=1))
+    active = np.flatnonzero(rms > max(0.0005, float(np.percentile(rms, 80)) * 0.06))
+    return float(active[-1] - active[0] + 1) if active.size else 0.0
+
+
 def timestamp(seconds):
     seconds = int(seconds)
     hours, rest = divmod(seconds, 3600)
