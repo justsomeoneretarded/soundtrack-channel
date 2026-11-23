@@ -243,6 +243,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
     candidates = [("aaaaaaaaaa1", (5, 120, "Dune Official Soundtrack")),
                   ("aaaaaaaaaa2", (4, 90, "Dune Main Theme"))]
     files, credits = sources.download_uploads(candidates, tmp_path / "a", "bestaudio/best", 8, 2400, 12)
@@ -365,6 +366,105 @@ def test_unavailable_download_retries_signed_out(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
     files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 120, "Dune Soundtrack"))],
                                         tmp_path / "a", "bestaudio/best", 8, 2400, 12)
     assert calls == [True, False] and len(files) == 1
+
+
+def test_download_routes(monkeypatch, tmp_path):
+    from soundtrack.common import download_routes, youtube
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    monkeypatch.setenv("SOUNDTRACK_COOKIES", str(cookies))
+    monkeypatch.setenv("SOUNDTRACK_PROXY", "socks5://127.0.0.1:40000")
+    assert download_routes() == [(True, True), (False, True), (True, False)]
+    assert youtube()[-2:] == ["--proxy", "socks5://127.0.0.1:40000"]
+    assert "--proxy" not in youtube(proxy=False)
+    monkeypatch.delenv("SOUNDTRACK_PROXY")
+    assert download_routes() == [(True, False), (False, False)]
+    monkeypatch.delenv("SOUNDTRACK_COOKIES")
+    assert download_routes() == [(False, False)]
+
+
+def test_truncated_download_is_retried_and_counted_by_real_length(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    monkeypatch.setenv("SOUNDTRACK_COOKIES", str(cookies))
+    lengths = iter([360.0, 2600.0, 300.0])  # First copy cut short, retry complete.
+
+    def fake_run(command, **_):
+        target = command[command.index("-o") + 1].replace("%(ext)s", "webm")
+        open(target, "w").close()
+        return sp.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: next(lengths))
+    files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 2627, "Full Official Soundtrack")),
+                                         ("aaaaaaaaaa2", (5, 300, "Main Theme"))],
+                                        tmp_path / "a", "bestaudio/best", 8, 4800, 12)
+    assert files[0].name == "aaaaaaaaaa1.webm"
+    assert not list((tmp_path / "a").glob("*.partial.*"))
+
+
+def test_other_installments_are_left_out():
+    from soundtrack.common import terms
+    from soundtrack.sources import installment_terms, other_installment, title_parts
+
+    main, sub = title_parts("Pirates of the Caribbean: The Curse of the Black Pearl (2003)")
+    siblings = installment_terms(["Pirates of the Caribbean: Dead Man's Chest",
+                                  "Pirates of the Caribbean: At World's End"], main)
+    cases = {
+        "Pirates of the Caribbean: At World's End - Love Theme (Revised Suite)": True,
+        "Pirates of the Caribbean Dead Man's Chest Soundtrack - Jack Sparrow": True,
+        "Pirates of the Caribbean: The Curse of the Black Pearl - Full Official Soundtrack": False,
+        'Pirates of the Caribbean: Curse of the Black Pearl (2003) Scene: "...Take a walk!"': False,
+        "Pirates of the Caribbean - He's a Pirate (Soundtrack)": False,
+    }
+    for name, expected in cases.items():
+        assert other_installment(name, terms(name), main, sub, siblings) is expected, name
+    # Without a subtitle there is nothing to tell installments apart by name alone.
+    main, sub = title_parts("Interstellar (2014)")
+    assert not other_installment("Interstellar: Main Theme", terms("Interstellar: Main Theme"), main, sub, [])
+
+
+def test_wikidata_series_parsing():
+    from soundtrack.footage import related_ids, series_parts
+
+    entity = {"claims": {"P179": [_claim({"id": "Q100"})], "P156": [_claim({"id": "Q2"})]}}
+    assert related_ids(entity) == (["Q100"], ["Q2"])
+    assert series_parts({"claims": {"P527": [_claim({"id": "Q1"}), _claim({"id": "Q2"})]}}) == ["Q1", "Q2"]
+
+
+def test_audio_search_skips_covers_and_prefers_full_albums(monkeypatch):
+    import json as jsonlib
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    items = [
+        ("aaaaaaaaaa1", "Pirates of the Caribbean Suite - Film Symphony Orchestra (Soundtrack)", 379),
+        ("aaaaaaaaaa2", "Pirates of the Caribbean: The Curse of the Black Pearl - Main Theme", 200),
+        ("aaaaaaaaaa3", "Pirates of the Caribbean: The Curse of the Black Pearl - Full Soundtrack", 2627),
+    ]
+
+    def fake_run(command, **_):
+        lines = [jsonlib.dumps({"id": vid, "title": name, "duration": length, "channel": "x"})
+                 for vid, name, length in items]
+        return sp.CompletedProcess(command, 0, stdout="\n".join(lines))
+
+    seen = {}
+
+    def fake_download(candidates, *args, **kwargs):
+        seen["ids"] = [vid for vid, _ in candidates]
+        return [object()], [("x", "y")]
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "download_uploads", fake_download)
+    sources.sources_for("Pirates of the Caribbean: The Curse of the Black Pearl (2003)", None)
+    assert seen["ids"] == ["aaaaaaaaaa3", "aaaaaaaaaa2"]

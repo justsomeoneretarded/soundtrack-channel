@@ -7,9 +7,10 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.parse
 
-from .common import YEAR, signed_in, terms, youtube
+from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_duration, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -39,8 +40,37 @@ def title_parts(title):
     return main_terms, sub_terms
 
 
+def installment_terms(others, main_terms):
+    """Distinctive words of each other work in the series, e.g. {'dead', 'man', 's', 'chest'}."""
+    found = []
+    for other in others:
+        distinct = terms(other) - main_terms - LINKING_WORDS - GENERIC
+        distinct = {word for word in distinct if not YEAR.fullmatch(word)}
+        if distinct:
+            found.append(distinct)
+    return found
+
+
+def other_installment(name, tokens, main_terms, sub_terms, sibling_terms):
+    """True when an upload names a different film or season of the same franchise."""
+    for distinct in sibling_terms:
+        if distinct <= tokens and not distinct <= sub_terms:
+            return True
+    if not sub_terms:
+        return False
+    # "Franchise: Other Subtitle - Track" names another installment when the subtitle differs.
+    for match in re.finditer(r":\s*([^:|\-–—(\[]+)", name):
+        before = re.findall(r"[^\W_]+", unicodedata.normalize("NFKD", name[:match.start()].casefold()))
+        if not main_terms <= set(before[-len(main_terms):]):
+            continue  # The colon doesn't follow the franchise name (e.g. 'Scene: "..."').
+        words = terms(match.group(1)) - LINKING_WORDS - GENERIC
+        if words and not words & sub_terms:
+            return True
+    return False
+
+
 def matching_uploads(title, queries, required, excluded, duration_limits, interleave=False,
-                     artists=()):
+                     artists=(), others=(), prefer_long=False):
     """Search YouTube and rank matching uploads.
 
     An upload must name the work's main title (the subtitle is a bonus). Uploads from an
@@ -53,6 +83,8 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
     requested_year = {word for word in words if YEAR.fullmatch(word)}
     main_terms, sub_terms = title_parts(title)
     artist_terms = [terms(artist) for artist in artists if terms(artist)]
+    sibling_terms = installment_terms(others, main_terms)
+    skipped = 0
     candidates, per_query = {}, []
     for query in queries:
         found = {}
@@ -89,6 +121,9 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
             years = {token for token in tokens if YEAR.fullmatch(token)}
             if requested_year and years and not requested_year & years:
                 continue
+            if other_installment(name, tokens, main_terms, sub_terms, sibling_terms):
+                skipped += 1
+                continue
             official = "official" in tokens or topic
             rank = 5 * bool(requested_year & years) + 4 * official
             rank += 2 * bool(tokens & {"soundtrack", "score", "ost", "clip", "scene"})
@@ -98,10 +133,13 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
                 rank -= 3  # Official artist track without the work's name: plausible but unconfirmed.
             if video_id not in candidates:
                 candidates[video_id] = found[video_id] = (rank, duration, name)
-    print(f"Found {len(candidates)} matching uploads.", flush=True)
+    print(f"Found {len(candidates)} matching uploads"
+          + (f" (left out {skipped} from other films in the series)." if skipped else "."), flush=True)
 
     def ordered(group):
-        return sorted(group.items(), key=lambda pair: (-pair[1][0], pair[1][1], pair[0]))
+        # Among equal ranks, longer uploads first when collecting music (full albums and suites).
+        length = (lambda d: -d) if prefer_long else (lambda d: d)
+        return sorted(group.items(), key=lambda pair: (-pair[1][0], length(pair[1][1]), pair[0]))
 
     if not interleave:
         return ordered(candidates)
@@ -144,25 +182,51 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         print(f"Downloading {name!r} ({duration:.0f}s)…", flush=True)
         command = ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
+        best = None  # (seconds, path) of the longest copy seen, in case every copy is short.
         try:
-            download = subprocess.run(youtube() + command, stderr=subprocess.PIPE, text=True,
-                                      timeout=min(timeout, remaining))
-            if download.returncode and signed_in() and UNAVAILABLE.search(download.stderr or ""):
-                # YouTube sometimes withholds a video from a signed-in session it is limiting
-                # while still serving it to signed-out requests (with the PO token provider).
-                print("  unavailable while signed in; retrying signed out.", file=sys.stderr, flush=True)
-                download = subprocess.run(youtube(signed_in=False) + command, stderr=subprocess.PIPE,
-                                          text=True, timeout=min(timeout, max(20, stop_at - time.monotonic())))
+            for attempt, (with_cookies, with_proxy) in enumerate(download_routes()):
+                if attempt:
+                    route = (("signed in" if with_cookies else "signed out")
+                             + (" through the proxy" if with_proxy else " directly"))
+                    print(f"  retrying {route}.", file=sys.stderr, flush=True)
+                download = subprocess.run(
+                    youtube(signed_in=with_cookies, proxy=with_proxy) + command,
+                    stderr=subprocess.PIPE, text=True,
+                    timeout=min(timeout, max(20, stop_at - time.monotonic())))
+                if not download.returncode:
+                    got = _downloaded(scratch, video_id)
+                    length = (media_duration(got) or 0) if got else 0
+                    if got and (duration <= 30 or length >= duration * 0.85):
+                        if best:
+                            best[1].unlink(missing_ok=True)  # Drop the earlier, shorter copy.
+                        best = (length, got)
+                        break
+                    # yt-dlp can report success for a stream that was cut short.
+                    print(f"  incomplete download: {length:.0f}s of {duration:.0f}s.", file=sys.stderr, flush=True)
+                    if got and (best is None or length > best[0]):
+                        if best:
+                            best[1].unlink(missing_ok=True)
+                        kept = got.with_name(f"{video_id}.partial{got.suffix}")
+                        got.replace(kept)
+                        best = (length, kept)
+                    elif got:
+                        got.unlink(missing_ok=True)
+                    continue
+                if not (UNAVAILABLE.search(download.stderr or "") or BLOCKED.search(download.stderr or "")):
+                    break
         except subprocess.TimeoutExpired:
             print(f"  timed out after {time.monotonic() - began:.0f}s.", file=sys.stderr, flush=True)
             continue
         errors = (download.stderr or "").strip()
-        matches = [path for path in scratch.glob(f"{video_id}.*")
-                   if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".temp")]
-        if download.returncode or len(matches) != 1:
+        if best and best[0] < 45:
+            best[1].unlink(missing_ok=True)
+            best = None
+        if best is None:
             reason = next((line for line in reversed(errors.splitlines()) if "ERROR" in line),
                           errors.splitlines()[-1] if errors else f"exit code {download.returncode}")
             print(f"  failed: {reason[:300]}", file=sys.stderr, flush=True)
+            for warning in [line for line in errors.splitlines() if line.startswith("WARNING")][:4]:
+                print(f"    {warning[:300]}", file=sys.stderr, flush=True)
             blocked = blocked + 1 if BLOCKED.search(errors) else 0
             if blocked >= 3:
                 print("YouTube is refusing this runner (sign-in or rate-limit check on three uploads "
@@ -171,18 +235,31 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                 break
             continue
         blocked = 0
-        print(f"  done in {time.monotonic() - began:.0f}s.", flush=True)
-        files.append(matches[0])
+        length, path = best
+        print(f"  done in {time.monotonic() - began:.0f}s ({length:.0f}s of media).", flush=True)
+        files.append(path)
         credits.append((name, url))
         used_names.add(signature)
-        seconds += duration
+        seconds += min(length, MAX_SOURCE_SECONDS)
         if len(files) >= limit or seconds >= budget:
             break
     return files, credits
 
 
-def sources_for(title, scratch, composer=""):
-    queries = ("official soundtrack", "original score")
+def _downloaded(scratch, video_id):
+    matches = [path for path in scratch.glob(f"{video_id}.*")
+               if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".temp")
+               and ".partial." not in path.name]
+    return matches[0] if len(matches) == 1 else None
+
+
+COVERS = {"orchestra", "orchestral", "symphony", "symphonic", "philharmonic", "choir", "choral",
+          "tribute", "rendition", "performed", "performance", "reimagined", "reimagining", "acapella",
+          "vocal", "vocals", "lyrics", "singing", "sing", "metal", "rock", "trap", "edm", "dubstep"}
+
+
+def sources_for(title, scratch, composer="", seconds=3600, others=()):
+    queries = ("official soundtrack", "full soundtrack", "original score", "complete score")
     if composer:
         queries += (f"{composer} score",)
     candidates = matching_uploads(
@@ -192,10 +269,13 @@ def sources_for(title, scratch, composer=""):
          "piano", "tutorial", "sped", "8d", "nightcore", "lofi", "arr", "arranged", "arrangement",
          "band", "concert", "live", "guitar", "violin", "cello", "ukulele", "flute", "ocarina", "drum",
          "drums", "marimba", "kalimba", "synthesia", "midi", "8bit", "orgel", "accordion", "harp",
-         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"},
-        (30, 7200), artists=[part for part in composer.split(" & ") if part],
+         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"} | COVERS,
+        (30, 7200), artists=[part for part in composer.split(" & ") if part], others=others,
+        prefer_long=True,
     )
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, 2400, 16)
+    # Gather at least as much distinct music as the video is long (capped), from several uploads.
+    budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "

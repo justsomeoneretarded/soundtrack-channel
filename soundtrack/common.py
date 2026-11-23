@@ -7,6 +7,7 @@ import sys
 import unicodedata
 
 RATE = 48000
+MAX_SOURCE_SECONDS = 2700  # Longest stretch decoded from one upload (45 minutes).
 WIDTH, HEIGHT = 1280, 720
 FFMPEG = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
 YOUTUBE = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
@@ -17,19 +18,41 @@ YEAR = re.compile(r"(?:19|20)\d{2}")
 WAVE_COLOR = (0x74, 0xEF, 0xB7)
 
 
-def youtube(signed_in=True):
-    """yt-dlp command, signed in with a cookies file when SOUNDTRACK_COOKIES points to one."""
+def youtube(signed_in=True, proxy=True):
+    """yt-dlp command.
+
+    Signs in with a cookies file when SOUNDTRACK_COOKIES points to one, and sends traffic
+    through SOUNDTRACK_PROXY when set. YouTube refuses media to data-center addresses such
+    as GitHub's runners; the workflow routes through Cloudflare WARP (or a YOUTUBE_PROXY
+    secret) so YouTube sees a different exit address.
+    """
     command = list(YOUTUBE)
     cookies = os.environ.get("SOUNDTRACK_COOKIES", "")
     if signed_in and cookies and Path(cookies).is_file():
         # Gentle pacing keeps a signed-in account from looking automated.
         command += ["--cookies", cookies, "--sleep-requests", "1"]
+    if proxy and proxy_url():
+        command += ["--proxy", proxy_url()]
     return command
+
+
+def proxy_url():
+    return os.environ.get("SOUNDTRACK_PROXY", "").strip()
 
 
 def signed_in():
     cookies = os.environ.get("SOUNDTRACK_COOKIES", "")
     return bool(cookies and Path(cookies).is_file())
+
+
+def download_routes():
+    """(signed_in, proxy) combinations to try, most likely to succeed first."""
+    routes = [(True, True), (False, True)] if proxy_url() else [(True, False), (False, False)]
+    if proxy_url():
+        routes.append((True, False))
+    if not signed_in():
+        routes = [route for route in routes if not route[0]] or [(False, bool(proxy_url()))]
+    return list(dict.fromkeys(routes))
 
 
 def terms(value):
