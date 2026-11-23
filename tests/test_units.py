@@ -243,6 +243,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
     candidates = [("aaaaaaaaaa1", (5, 120, "Dune Official Soundtrack")),
                   ("aaaaaaaaaa2", (4, 90, "Dune Main Theme"))]
     files, credits = sources.download_uploads(candidates, tmp_path / "a", "bestaudio/best", 8, 2400, 12)
@@ -365,6 +366,7 @@ def test_unavailable_download_retries_signed_out(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
     files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 120, "Dune Soundtrack"))],
                                         tmp_path / "a", "bestaudio/best", 8, 2400, 12)
     assert calls == [True, False] and len(files) == 1
@@ -384,3 +386,27 @@ def test_download_routes(monkeypatch, tmp_path):
     assert download_routes() == [(True, False), (False, False)]
     monkeypatch.delenv("SOUNDTRACK_COOKIES")
     assert download_routes() == [(False, False)]
+
+
+def test_truncated_download_is_retried_and_counted_by_real_length(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    monkeypatch.setenv("SOUNDTRACK_COOKIES", str(cookies))
+    lengths = iter([360.0, 2600.0, 300.0])  # First copy cut short, retry complete.
+
+    def fake_run(command, **_):
+        target = command[command.index("-o") + 1].replace("%(ext)s", "webm")
+        open(target, "w").close()
+        return sp.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_duration", lambda path: next(lengths))
+    files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 2627, "Full Official Soundtrack")),
+                                         ("aaaaaaaaaa2", (5, 300, "Main Theme"))],
+                                        tmp_path / "a", "bestaudio/best", 8, 4800, 12)
+    assert files[0].name == "aaaaaaaaaa1.webm"
+    assert not list((tmp_path / "a").glob("*.partial.*"))

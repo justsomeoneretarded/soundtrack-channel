@@ -73,7 +73,7 @@ def main(argv=None):
         elif args.audio_url:
             files, credits = download_links(args.audio_url, scratch / "audio-links")
         else:
-            files, credits = sources_for(title, scratch / "audio-uploads", args.composer)
+            files, credits = sources_for(title, scratch / "audio-uploads", args.composer, seconds)
         sources, passages, credits = prepare(files, credits, scratch, args.style)
         if len(passages) < 3 and seconds >= 600:
             raise SystemExit("Only one or two usable passages were found. "

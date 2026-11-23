@@ -8,7 +8,7 @@ import sys
 
 import numpy as np
 
-from .common import FFMPEG, RATE
+from .common import FFMPEG, MAX_SOURCE_SECONDS, RATE
 
 # Intensity keyframes for the mix: opening, ascent, release, gathering, peak, resolution.
 ARC = [0.18, 0.56, 0.78, 0.38, 0.58, 0.94, 0.25]
@@ -47,7 +47,7 @@ def prepare(files, credits, scratch, style="mix"):
     sources, passages, usable_credits = [], [], []
     for path, credit in zip(files, credits):
         raw = scratch / f"source-{len(sources)}.pcm"
-        decoded = subprocess.run(FFMPEG + ["-i", str(path), "-map", "0:a:0", "-t", "1800",
+        decoded = subprocess.run(FFMPEG + ["-i", str(path), "-map", "0:a:0", "-t", str(MAX_SOURCE_SECONDS),
                                           "-ac", "2", "-ar", str(RATE), "-f", "f32le", str(raw)])
         if decoded.returncode or not raw.exists() or raw.stat().st_size < RATE * 8 * 2:
             print(f"Skipping unavailable or empty audio from {credit[0]!r}.", file=sys.stderr)
@@ -63,6 +63,7 @@ def prepare(files, credits, scratch, style="mix"):
             print(f"Skipping near-silent audio from {credit[0]!r}.", file=sys.stderr)
             continue
         first, last = int(active[0]), int(active[-1]) + 1
+        print(f"Using {(last - first) / 4:.0f}s of audio from {credit[0]!r}.", flush=True)
         source = len(sources)
         sources.append(samples)
         usable_credits.append(credit)

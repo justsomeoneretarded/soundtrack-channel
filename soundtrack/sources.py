@@ -9,7 +9,7 @@ import sys
 import time
 import urllib.parse
 
-from .common import YEAR, download_routes, terms, youtube
+from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_duration, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -144,6 +144,7 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         print(f"Downloading {name!r} ({duration:.0f}s)…", flush=True)
         command = ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
+        best = None  # (seconds, path) of the longest copy seen, in case every copy is short.
         try:
             for attempt, (with_cookies, with_proxy) in enumerate(download_routes()):
                 if attempt:
@@ -154,16 +155,35 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                     youtube(signed_in=with_cookies, proxy=with_proxy) + command,
                     stderr=subprocess.PIPE, text=True,
                     timeout=min(timeout, max(20, stop_at - time.monotonic())))
-                if not download.returncode or not (UNAVAILABLE.search(download.stderr or "")
-                                                   or BLOCKED.search(download.stderr or "")):
+                if not download.returncode:
+                    got = _downloaded(scratch, video_id)
+                    length = (media_duration(got) or 0) if got else 0
+                    if got and (duration <= 30 or length >= duration * 0.85):
+                        if best:
+                            best[1].unlink(missing_ok=True)  # Drop the earlier, shorter copy.
+                        best = (length, got)
+                        break
+                    # yt-dlp can report success for a stream that was cut short.
+                    print(f"  incomplete download: {length:.0f}s of {duration:.0f}s.", file=sys.stderr, flush=True)
+                    if got and (best is None or length > best[0]):
+                        if best:
+                            best[1].unlink(missing_ok=True)
+                        kept = got.with_name(f"{video_id}.partial{got.suffix}")
+                        got.replace(kept)
+                        best = (length, kept)
+                    elif got:
+                        got.unlink(missing_ok=True)
+                    continue
+                if not (UNAVAILABLE.search(download.stderr or "") or BLOCKED.search(download.stderr or "")):
                     break
         except subprocess.TimeoutExpired:
             print(f"  timed out after {time.monotonic() - began:.0f}s.", file=sys.stderr, flush=True)
             continue
         errors = (download.stderr or "").strip()
-        matches = [path for path in scratch.glob(f"{video_id}.*")
-                   if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".temp")]
-        if download.returncode or len(matches) != 1:
+        if best and best[0] < 45:
+            best[1].unlink(missing_ok=True)
+            best = None
+        if best is None:
             reason = next((line for line in reversed(errors.splitlines()) if "ERROR" in line),
                           errors.splitlines()[-1] if errors else f"exit code {download.returncode}")
             print(f"  failed: {reason[:300]}", file=sys.stderr, flush=True)
@@ -177,17 +197,25 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                 break
             continue
         blocked = 0
-        print(f"  done in {time.monotonic() - began:.0f}s.", flush=True)
-        files.append(matches[0])
+        length, path = best
+        print(f"  done in {time.monotonic() - began:.0f}s ({length:.0f}s of media).", flush=True)
+        files.append(path)
         credits.append((name, url))
         used_names.add(signature)
-        seconds += duration
+        seconds += min(length, MAX_SOURCE_SECONDS)
         if len(files) >= limit or seconds >= budget:
             break
     return files, credits
 
 
-def sources_for(title, scratch, composer=""):
+def _downloaded(scratch, video_id):
+    matches = [path for path in scratch.glob(f"{video_id}.*")
+               if path.suffix not in {".part", ".ytdl"} and not path.name.endswith(".temp")
+               and ".partial." not in path.name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def sources_for(title, scratch, composer="", seconds=3600):
     queries = ("official soundtrack", "original score")
     if composer:
         queries += (f"{composer} score",)
@@ -201,7 +229,9 @@ def sources_for(title, scratch, composer=""):
          "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"},
         (30, 7200), artists=[part for part in composer.split(" & ") if part],
     )
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, 2400, 16)
+    # Gather at least as much distinct music as the video is long (capped), from several uploads.
+    budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "

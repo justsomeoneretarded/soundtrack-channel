@@ -7,6 +7,7 @@ import sys
 import unicodedata
 
 RATE = 48000
+MAX_SOURCE_SECONDS = 2700  # Longest stretch decoded from one upload (45 minutes).
 WIDTH, HEIGHT = 1280, 720
 FFMPEG = ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-y"]
 YOUTUBE = [sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-playlist",
