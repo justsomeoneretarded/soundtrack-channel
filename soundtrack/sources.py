@@ -297,7 +297,7 @@ def sources_for(title, scratch, composer="", seconds=3600, others=()):
     )
     # Gather at least as much distinct music as the video is long (capped), from several uploads.
     budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16, audio=True)
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 16, budget, 24, audio=True)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "
