@@ -485,3 +485,33 @@ def test_media_length_sees_truncated_files(tmp_path):
     cut.write_bytes(full.read_bytes()[:len(full.read_bytes()) // 6])
     assert media_duration(cut) > 100  # The header still claims the full length.
     assert media_length(cut) < 40 and abs(media_length(full) - 120) < 1
+    # Timestamps that jump to the end (as in a real Actions download) must not count as audio.
+    gap = tmp_path / "gap.webm"
+    sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=40", "-af", "asetpts='if(gte(T,20),PTS+600/TB,PTS)'",
+            "-c:a", "libopus", "-b:a", "64k", str(gap)], check=True)
+    assert media_duration(gap) > 600 and abs(media_length(gap) - 40) < 1
+
+
+def test_truncated_copy_retries_as_another_client(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    from soundtrack import sources
+
+    monkeypatch.delenv("SOUNDTRACK_COOKIES", raising=False)
+    monkeypatch.delenv("SOUNDTRACK_PROXY", raising=False)
+    commands = []
+
+    def fake_run(command, **_):
+        commands.append(command)
+        target = command[command.index("-o") + 1].replace("%(ext)s", "webm")
+        open(target, "w").close()
+        return sp.CompletedProcess(command, 0, stdout="", stderr="")
+
+    lengths = iter([246.0, 2626.0])  # Served cut short, then complete to another client.
+    monkeypatch.setattr(sources.subprocess, "run", fake_run)
+    monkeypatch.setattr(sources, "media_length", lambda path: next(lengths))
+    files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 2627, "Full Official Soundtrack"))],
+                                        tmp_path / "a", "bestaudio/best", 8, 4800, 12)
+    assert len(files) == 1 and len(commands) == 2
+    assert "youtube:player_client=web_safari" in commands[1]

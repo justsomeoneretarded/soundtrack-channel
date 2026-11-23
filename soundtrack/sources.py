@@ -154,6 +154,7 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
 
 BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|po token",
                      re.IGNORECASE)
+ALTERNATE_CLIENTS = ("web_safari", "mweb")
 UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORECASE)
 
 
@@ -184,13 +185,22 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
         best = None  # (seconds, path) of the longest copy seen, in case every copy is short.
         try:
-            for attempt, (with_cookies, with_proxy) in enumerate(download_routes()):
+            routes = download_routes()
+            # After the usual routes, ask YouTube as other apps: a stream served cut short to
+            # one client is often complete for another.
+            attempts = [(cookies, proxy, None) for cookies, proxy in routes]
+            attempts += [(routes[0][0], routes[0][1], client) for client in ALTERNATE_CLIENTS]
+            for attempt, (with_cookies, with_proxy, client) in enumerate(attempts):
+                if client and best is None:
+                    break  # Alternate clients only help with truncated copies.
                 if attempt:
                     route = (("signed in" if with_cookies else "signed out")
-                             + (" through the proxy" if with_proxy else " directly"))
+                             + (" through the proxy" if with_proxy else " directly")
+                             + (f" as {client}" if client else ""))
                     print(f"  retrying {route}.", file=sys.stderr, flush=True)
+                extra = ["--extractor-args", f"youtube:player_client={client}"] if client else []
                 download = subprocess.run(
-                    youtube(signed_in=with_cookies, proxy=with_proxy) + command,
+                    youtube(signed_in=with_cookies, proxy=with_proxy) + extra + command,
                     stderr=subprocess.PIPE, text=True,
                     timeout=min(timeout, max(20, stop_at - time.monotonic())))
                 if not download.returncode:
