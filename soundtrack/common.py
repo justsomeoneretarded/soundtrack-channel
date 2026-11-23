@@ -91,6 +91,21 @@ def media_duration(path):
         return None
 
 
+def media_length(path):
+    """Seconds of media actually present, found by reading every packet.
+
+    The container header can claim the full length of a download that was cut short, so this
+    reads to the end instead (a stream copy, about two seconds for 30 minutes of audio).
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-map", "0",
+         "-c", "copy", "-f", "null", "-", "-progress", "pipe:1"],
+        capture_output=True, text=True,
+    )
+    times = re.findall(r"out_time_us=(\d+)", result.stdout)
+    return int(times[-1]) / 1e6 if times else None
+
+
 def timestamp(seconds):
     seconds = int(seconds)
     hours, rest = divmod(seconds, 3600)

@@ -243,7 +243,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
-    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
+    monkeypatch.setattr(sources, "media_length", lambda path: 120.0)
     candidates = [("aaaaaaaaaa1", (5, 120, "Dune Official Soundtrack")),
                   ("aaaaaaaaaa2", (4, 90, "Dune Main Theme"))]
     files, credits = sources.download_uploads(candidates, tmp_path / "a", "bestaudio/best", 8, 2400, 12)
@@ -366,7 +366,7 @@ def test_unavailable_download_retries_signed_out(monkeypatch, tmp_path):
         return sp.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
-    monkeypatch.setattr(sources, "media_duration", lambda path: 120.0)
+    monkeypatch.setattr(sources, "media_length", lambda path: 120.0)
     files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 120, "Dune Soundtrack"))],
                                         tmp_path / "a", "bestaudio/best", 8, 2400, 12)
     assert calls == [True, False] and len(files) == 1
@@ -404,7 +404,7 @@ def test_truncated_download_is_retried_and_counted_by_real_length(monkeypatch, t
         return sp.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sources.subprocess, "run", fake_run)
-    monkeypatch.setattr(sources, "media_duration", lambda path: next(lengths))
+    monkeypatch.setattr(sources, "media_length", lambda path: next(lengths))
     files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 2627, "Full Official Soundtrack")),
                                          ("aaaaaaaaaa2", (5, 300, "Main Theme"))],
                                         tmp_path / "a", "bestaudio/best", 8, 4800, 12)
@@ -468,3 +468,20 @@ def test_audio_search_skips_covers_and_prefers_full_albums(monkeypatch):
     monkeypatch.setattr(sources, "download_uploads", fake_download)
     sources.sources_for("Pirates of the Caribbean: The Curse of the Black Pearl (2003)", None)
     assert seen["ids"] == ["aaaaaaaaaa3", "aaaaaaaaaa2"]
+
+
+def test_media_length_sees_truncated_files(tmp_path):
+    import shutil
+    import subprocess as sp
+
+    from soundtrack.common import media_duration, media_length
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is required")
+    full = tmp_path / "full.webm"
+    sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=120", "-c:a", "libopus", "-b:a", "64k", str(full)], check=True)
+    cut = tmp_path / "cut.webm"
+    cut.write_bytes(full.read_bytes()[:len(full.read_bytes()) // 6])
+    assert media_duration(cut) > 100  # The header still claims the full length.
+    assert media_length(cut) < 40 and abs(media_length(full) - 120) < 1

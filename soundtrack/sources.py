@@ -10,7 +10,7 @@ import time
 import unicodedata
 import urllib.parse
 
-from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_duration, terms, youtube
+from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_length, terms, youtube
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -195,7 +195,7 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                     timeout=min(timeout, max(20, stop_at - time.monotonic())))
                 if not download.returncode:
                     got = _downloaded(scratch, video_id)
-                    length = (media_duration(got) or 0) if got else 0
+                    length = (media_length(got) or 0) if got else 0
                     if got and (duration <= 30 or length >= duration * 0.85):
                         if best:
                             best[1].unlink(missing_ok=True)  # Drop the earlier, shorter copy.
@@ -256,6 +256,11 @@ def _downloaded(scratch, video_id):
 COVERS = {"orchestra", "orchestral", "symphony", "symphonic", "philharmonic", "choir", "choral",
           "tribute", "rendition", "performed", "performance", "reimagined", "reimagining", "acapella",
           "vocal", "vocals", "lyrics", "singing", "sing", "metal", "rock", "trap", "edm", "dubstep"}
+# Mood compilations mix several films and loop material, so they are not this work's album.
+COMPILATIONS = {"focus", "study", "studying", "sleep", "sleeping", "relax", "relaxing", "ambience",
+                "ambient", "asmr", "chill", "calm", "meditation", "hour", "hours", "hrs", "hr",
+                "playlist", "compilation", "collection", "best", "greatest", "epic", "mix", "megamix",
+                "mashup", "medley", "workout", "gaming"}
 
 
 def sources_for(title, scratch, composer="", seconds=3600, others=()):
@@ -269,7 +274,7 @@ def sources_for(title, scratch, composer="", seconds=3600, others=()):
          "piano", "tutorial", "sped", "8d", "nightcore", "lofi", "arr", "arranged", "arrangement",
          "band", "concert", "live", "guitar", "violin", "cello", "ukulele", "flute", "ocarina", "drum",
          "drums", "marimba", "kalimba", "synthesia", "midi", "8bit", "orgel", "accordion", "harp",
-         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"} | COVERS,
+         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"} | COVERS | COMPILATIONS,
         (30, 7200), artists=[part for part in composer.split(" & ") if part], others=others,
         prefer_long=True,
     )
