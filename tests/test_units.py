@@ -509,3 +509,19 @@ def test_audible_span_ignores_a_silent_tail(tmp_path):
             str(path)], check=True)
     assert abs(media_length(path) - 300) < 2  # All the data is there...
     assert abs(audible_span(path) - 60) < 3   # ...but only a minute of it is sound.
+
+
+def test_distinct_cues_drops_second_upload_of_same_track():
+    from soundtrack import sources
+
+    title = "Pirates of the Caribbean: The Curse of the Black Pearl (2003)"
+    names = [
+        "Pirates of the Caribbean (2003) - Full Official Soundtrack",
+        "01. Fog Bound (Pirates of the Caribbean: The Curse of the Black Pearl Complete Score)",
+        "Pirates Of The Caribbean (Complete Score) - Fog Bound",
+        "Pirates of the Caribbean- Original  Soundtrack",
+        "Pirates Of The Caribbean (Complete Score) - Sacking The Village (Part 1)",
+        "Pirates Of The Caribbean (Complete Score) - Sacking The Village (Part 2)",
+    ]
+    kept = sources.distinct_cues([(str(i), (0, 60, n)) for i, n in enumerate(names)], title, "Klaus Badelt")
+    assert [video_id for video_id, _ in kept] == ["0", "1", "3", "4", "5"]

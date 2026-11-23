@@ -280,6 +280,32 @@ COMPILATIONS = {"focus", "study", "studying", "sleep", "sleeping", "relax", "rel
                 "mashup", "medley", "workout", "gaming"}
 
 
+TRACK_NUMBER = re.compile(r"^\s*\d{1,3}\s*[.)\-–—:]\s*")
+
+
+def cue_key(name, title, composer=""):
+    """Words naming the cue itself, so two uploads of the same track can be told apart.
+
+    '01. Fog Bound (Pirates of the Caribbean Complete Score)' and 'Pirates Of The Caribbean
+    (Complete Score) - Fog Bound' both give {'fog', 'bound'}. Whole-album uploads give an
+    empty set and are never treated as duplicates.
+    """
+    words = terms(TRACK_NUMBER.sub("", name)) - terms(title) - terms(composer) - GENERIC - LINKING_WORDS
+    return frozenset(word for word in words if not YEAR.fullmatch(word))
+
+
+def distinct_cues(candidates, title, composer=""):
+    """Keep the best-ranked upload of each named cue."""
+    seen, kept = set(), []
+    for candidate in candidates:
+        key = cue_key(candidate[1][2], title, composer)
+        if key and key in seen:
+            continue
+        seen.add(key)
+        kept.append(candidate)
+    return kept
+
+
 def sources_for(title, scratch, composer="", seconds=3600, others=()):
     queries = ("official soundtrack", "full soundtrack", "original score", "complete score")
     if composer:
@@ -295,6 +321,7 @@ def sources_for(title, scratch, composer="", seconds=3600, others=()):
         (30, 7200), artists=[part for part in composer.split(" & ") if part], others=others,
         prefer_long=True,
     )
+    candidates = distinct_cues(candidates, title, composer)
     # Gather at least as much distinct music as the video is long (capped), from several uploads.
     budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
     files, credits = download_uploads(candidates, scratch, "bestaudio/best", 16, budget, 24, audio=True)
