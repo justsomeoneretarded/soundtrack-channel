@@ -95,8 +95,41 @@ def character_ids(entity):
     return list(dict.fromkeys(found))
 
 
-def characters_for(title, limit=4):
-    """Main character names for a work, best effort. Returns [] when Wikidata has none."""
+def related_ids(entity):
+    """Series the work belongs to (P179) and the works it follows or precedes (P155, P156)."""
+    series, neighbours = [], []
+    claims = entity.get("claims", {})
+    for prop, bucket in (("P179", series), ("P155", neighbours), ("P156", neighbours)):
+        for claim in claims.get(prop, []):
+            value = claim.get("mainsnak", {}).get("datavalue", {}).get("value", {})
+            if isinstance(value, dict) and value.get("id"):
+                bucket.append(value["id"])
+    return series, neighbours
+
+
+def series_parts(entity):
+    parts = []
+    for claim in entity.get("claims", {}).get("P527", []):
+        value = claim.get("mainsnak", {}).get("datavalue", {}).get("value", {})
+        if isinstance(value, dict) and value.get("id"):
+            parts.append(value["id"])
+    return parts
+
+
+def _labels(ids):
+    if not ids:
+        return {}
+    entities = _wikidata({"action": "wbgetentities", "ids": "|".join(ids[:50]), "props": "labels",
+                          "languages": "en"}).get("entities", {})
+    return {item: entities.get(item, {}).get("labels", {}).get("en", {}).get("value", "") for item in ids}
+
+
+def work_details(title, limit=4):
+    """(main character names, titles of other works in the same series), best effort.
+
+    The other titles let searches leave out sequels and prequels, whose music and scenes
+    belong to a different film.
+    """
     year = next(iter(YEAR.findall(title)), None)
     name = re.sub(r"[\s(\[]*\b(?:19|20)\d{2}\b[)\]]*", " ", title).strip() or title
     try:
@@ -104,34 +137,50 @@ def characters_for(title, limit=4):
                            "type": "item", "limit": 8}).get("search", [])
         ids = [item["id"] for item in found]
         if not ids:
-            return []
+            return [], []
         entities = _wikidata({"action": "wbgetentities", "ids": "|".join(ids),
                               "props": "claims|descriptions", "languages": "en"}).get("entities", {})
         work = pick_work(ids, entities, year)
-        roles = character_ids(entities.get(work, {})) if work else []
-        if not roles:
-            return []
-        labels = _wikidata({"action": "wbgetentities", "ids": "|".join(roles[:30]), "props": "labels",
-                            "languages": "en"}).get("entities", {})
-    except Exception as error:  # Network or format problems only cost the character searches.
-        print(f"Character lookup skipped: {error}", file=sys.stderr)
-        return []
+        if not work:
+            return [], []
+        entity = entities.get(work, {})
+        roles = character_ids(entity)
+        role_labels = _labels(roles[:30])
+        series, neighbours = related_ids(entity)
+        siblings = list(neighbours)
+        if series:
+            series_entities = _wikidata({"action": "wbgetentities", "ids": "|".join(series[:5]),
+                                         "props": "claims", "languages": "en"}).get("entities", {})
+            for item in series[:5]:
+                siblings += series_parts(series_entities.get(item, {}))
+        siblings = [item for item in dict.fromkeys(siblings) if item != work]
+        sibling_labels = _labels(siblings)
+    except Exception as error:  # Network or format problems only cost the targeted searches.
+        print(f"Wikidata lookup skipped: {error}", file=sys.stderr)
+        return [], []
     names = []
     for role in roles:
-        label = labels.get(role, {}).get("labels", {}).get("en", {}).get("value", "")
-        label = re.sub(r"\s*\(.*?\)\s*", " ", label).strip()
+        label = re.sub(r"\s*\(.*?\)\s*", " ", role_labels.get(role, "")).strip()
         if label and label.casefold() != name.casefold() and label not in names:
             names.append(label)
+    others = [label for label in sibling_labels.values() if label]
     print(f"Characters from Wikidata: {', '.join(names[:limit]) or 'none'}.", flush=True)
-    return names[:limit]
+    if others:
+        print(f"Leaving out other works in the series: {'; '.join(others[:8])}.", flush=True)
+    return names[:limit], others
 
 
-def gather(title, scratch, characters=()):
+def characters_for(title, limit=4):
+    return work_details(title, limit)[0]
+
+
+def gather(title, scratch, characters=(), others=()):
     """Download trailers, official clips, and scenes featuring the named characters."""
     queries = ["official trailer", "official clip"]
     queries += [f"{character} scene" for character in characters[:4]]
     queries += ["best scenes"]
-    candidates = matching_uploads(title, queries, SCENE_WORDS, NOT_SCENES, (20, 900), interleave=True)
+    candidates = matching_uploads(title, queries, SCENE_WORDS, NOT_SCENES, (20, 900), interleave=True,
+                                  others=others)
     return download_uploads(
         candidates, scratch,
         "bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best[height<=720]",

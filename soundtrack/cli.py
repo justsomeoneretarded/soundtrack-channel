@@ -9,7 +9,7 @@ import time
 from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudness, prepare, write_mix
 from .common import clean_composer, length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
-from .footage import analyse, characters_for, gather, plan_scenes, portraits
+from .footage import analyse, gather, plan_scenes, portraits, work_details
 from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
 from .visuals import (character_layer, make_art, make_vertical_art, now_playing_cards,
@@ -67,13 +67,20 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="soundtrack-") as temp:
         scratch = Path(temp)
+        characters = [name.strip() for name in args.characters.split(",") if name.strip()]
+        others = []
+        youtube_audio = not args.audio and not args.audio_url
+        youtube_clips = not args.clips and not args.audio
+        if youtube_audio or youtube_clips:
+            found_characters, others = work_details(title)
+            characters = characters or found_characters
         stage("Finding audio.")
         if args.audio:
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
         elif args.audio_url:
             files, credits = download_links(args.audio_url, scratch / "audio-links")
         else:
-            files, credits = sources_for(title, scratch / "audio-uploads", args.composer, seconds)
+            files, credits = sources_for(title, scratch / "audio-uploads", args.composer, seconds, others)
         sources, passages, credits = prepare(files, credits, scratch, args.style)
         if len(passages) < 3 and seconds >= 600:
             raise SystemExit("Only one or two usable passages were found. "
@@ -81,14 +88,12 @@ def main(argv=None):
         labels = cue_labels([name for name, _ in credits], title, args.composer)
 
         stage(f"Prepared {len(passages)} passages from {len(credits)} sources. Finding scenes.")
-        characters = [name.strip() for name in args.characters.split(",") if name.strip()]
         if args.clips:
             clip_files, clip_credits = args.clips, [(path.stem, "") for path in args.clips]
         elif args.audio:
             clip_files, clip_credits = [], []
         else:
-            characters = characters or characters_for(title)
-            clip_files, clip_credits = gather(title, scratch / "visual-uploads", characters)
+            clip_files, clip_credits = gather(title, scratch / "visual-uploads", characters, others)
         stage(f"Analysing {len(clip_files)} videos.")
         analysis = analyse(clip_files, clip_credits, scratch / "analysis")
         scenes, scene_details = plan_scenes(analysis, seconds, args.cutaways)

@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.parse
 
 from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_duration, terms, youtube
@@ -39,8 +40,37 @@ def title_parts(title):
     return main_terms, sub_terms
 
 
+def installment_terms(others, main_terms):
+    """Distinctive words of each other work in the series, e.g. {'dead', 'man', 's', 'chest'}."""
+    found = []
+    for other in others:
+        distinct = terms(other) - main_terms - LINKING_WORDS - GENERIC
+        distinct = {word for word in distinct if not YEAR.fullmatch(word)}
+        if distinct:
+            found.append(distinct)
+    return found
+
+
+def other_installment(name, tokens, main_terms, sub_terms, sibling_terms):
+    """True when an upload names a different film or season of the same franchise."""
+    for distinct in sibling_terms:
+        if distinct <= tokens and not distinct <= sub_terms:
+            return True
+    if not sub_terms:
+        return False
+    # "Franchise: Other Subtitle - Track" names another installment when the subtitle differs.
+    for match in re.finditer(r":\s*([^:|\-–—(\[]+)", name):
+        before = re.findall(r"[^\W_]+", unicodedata.normalize("NFKD", name[:match.start()].casefold()))
+        if not main_terms <= set(before[-len(main_terms):]):
+            continue  # The colon doesn't follow the franchise name (e.g. 'Scene: "..."').
+        words = terms(match.group(1)) - LINKING_WORDS - GENERIC
+        if words and not words & sub_terms:
+            return True
+    return False
+
+
 def matching_uploads(title, queries, required, excluded, duration_limits, interleave=False,
-                     artists=()):
+                     artists=(), others=(), prefer_long=False):
     """Search YouTube and rank matching uploads.
 
     An upload must name the work's main title (the subtitle is a bonus). Uploads from an
@@ -53,6 +83,8 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
     requested_year = {word for word in words if YEAR.fullmatch(word)}
     main_terms, sub_terms = title_parts(title)
     artist_terms = [terms(artist) for artist in artists if terms(artist)]
+    sibling_terms = installment_terms(others, main_terms)
+    skipped = 0
     candidates, per_query = {}, []
     for query in queries:
         found = {}
@@ -89,6 +121,9 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
             years = {token for token in tokens if YEAR.fullmatch(token)}
             if requested_year and years and not requested_year & years:
                 continue
+            if other_installment(name, tokens, main_terms, sub_terms, sibling_terms):
+                skipped += 1
+                continue
             official = "official" in tokens or topic
             rank = 5 * bool(requested_year & years) + 4 * official
             rank += 2 * bool(tokens & {"soundtrack", "score", "ost", "clip", "scene"})
@@ -98,10 +133,13 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
                 rank -= 3  # Official artist track without the work's name: plausible but unconfirmed.
             if video_id not in candidates:
                 candidates[video_id] = found[video_id] = (rank, duration, name)
-    print(f"Found {len(candidates)} matching uploads.", flush=True)
+    print(f"Found {len(candidates)} matching uploads"
+          + (f" (left out {skipped} from other films in the series)." if skipped else "."), flush=True)
 
     def ordered(group):
-        return sorted(group.items(), key=lambda pair: (-pair[1][0], pair[1][1], pair[0]))
+        # Among equal ranks, longer uploads first when collecting music (full albums and suites).
+        length = (lambda d: -d) if prefer_long else (lambda d: d)
+        return sorted(group.items(), key=lambda pair: (-pair[1][0], length(pair[1][1]), pair[0]))
 
     if not interleave:
         return ordered(candidates)
@@ -215,8 +253,13 @@ def _downloaded(scratch, video_id):
     return matches[0] if len(matches) == 1 else None
 
 
-def sources_for(title, scratch, composer="", seconds=3600):
-    queries = ("official soundtrack", "original score")
+COVERS = {"orchestra", "orchestral", "symphony", "symphonic", "philharmonic", "choir", "choral",
+          "tribute", "rendition", "performed", "performance", "reimagined", "reimagining", "acapella",
+          "vocal", "vocals", "lyrics", "singing", "sing", "metal", "rock", "trap", "edm", "dubstep"}
+
+
+def sources_for(title, scratch, composer="", seconds=3600, others=()):
+    queries = ("official soundtrack", "full soundtrack", "original score", "complete score")
     if composer:
         queries += (f"{composer} score",)
     candidates = matching_uploads(
@@ -226,8 +269,9 @@ def sources_for(title, scratch, composer="", seconds=3600):
          "piano", "tutorial", "sped", "8d", "nightcore", "lofi", "arr", "arranged", "arrangement",
          "band", "concert", "live", "guitar", "violin", "cello", "ukulele", "flute", "ocarina", "drum",
          "drums", "marimba", "kalimba", "synthesia", "midi", "8bit", "orgel", "accordion", "harp",
-         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"},
-        (30, 7200), artists=[part for part in composer.split(" & ") if part],
+         "recorder", "trumpet", "saxophone", "sax", "lesson", "sheet", "easy", "beginner"} | COVERS,
+        (30, 7200), artists=[part for part in composer.split(" & ") if part], others=others,
+        prefer_long=True,
     )
     # Gather at least as much distinct music as the video is long (capped), from several uploads.
     budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
