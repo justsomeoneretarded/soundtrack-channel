@@ -494,30 +494,6 @@ def test_media_length_sees_truncated_files(tmp_path):
     assert media_duration(gap) > 600 and abs(media_length(gap) - 40) < 1
 
 
-def test_truncated_copy_retries_as_another_client(monkeypatch, tmp_path):
-    import subprocess as sp
-
-    from soundtrack import sources
-
-    monkeypatch.delenv("SOUNDTRACK_COOKIES", raising=False)
-    monkeypatch.delenv("SOUNDTRACK_PROXY", raising=False)
-    commands = []
-
-    def fake_run(command, **_):
-        commands.append(command)
-        target = command[command.index("-o") + 1].replace("%(ext)s", "webm")
-        open(target, "w").close()
-        return sp.CompletedProcess(command, 0, stdout="", stderr="")
-
-    lengths = iter([246.0, 2626.0])  # Served cut short, then complete to another client.
-    monkeypatch.setattr(sources.subprocess, "run", fake_run)
-    monkeypatch.setattr(sources, "media_length", lambda path: next(lengths))
-    files, _ = sources.download_uploads([("aaaaaaaaaa1", (5, 2627, "Full Official Soundtrack"))],
-                                        tmp_path / "a", "bestaudio/best", 8, 4800, 12)
-    assert len(files) == 1 and len(commands) == 2
-    assert "youtube:player_client=web_safari" in commands[1]
-
-
 def test_audible_span_ignores_a_silent_tail(tmp_path):
     import shutil
     import subprocess as sp

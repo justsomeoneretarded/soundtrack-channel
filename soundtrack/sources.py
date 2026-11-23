@@ -155,7 +155,9 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
 
 BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|po token",
                      re.IGNORECASE)
-ALTERNATE_CLIENTS = ("web_safari", "mweb")
+# Other YouTube clients were tried for copies that go silent early, but on Actions they wait on
+# repeated proof-of-origin tokens until they time out, so only the usual routes are used.
+ALTERNATE_CLIENTS = ()
 UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORECASE)
 
 
