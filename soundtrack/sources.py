@@ -10,7 +10,8 @@ import time
 import unicodedata
 import urllib.parse
 
-from .common import MAX_SOURCE_SECONDS, YEAR, download_routes, media_length, terms, youtube
+from .common import (MAX_SOURCE_SECONDS, YEAR, audible_span, download_routes, media_length, terms,
+                     youtube)
 
 # Words that describe an upload rather than name a cue.
 GENERIC = {
@@ -154,11 +155,14 @@ def matching_uploads(title, queries, required, excluded, duration_limits, interl
 
 BLOCKED = re.compile(r"sign in to confirm|not a bot|http error 429|too many requests|po token",
                      re.IGNORECASE)
+# Other YouTube clients were tried for copies that go silent early, but on Actions they wait on
+# repeated proof-of-origin tokens until they time out, so only the usual routes are used.
+ALTERNATE_CLIENTS = ()
 UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORECASE)
 
 
 def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240,
-                     deadline_minutes=12):
+                     deadline_minutes=12, audio=False):
     """Download the best candidates within a time limit.
 
     Stops early when YouTube keeps answering with sign-in or rate-limit checks, so a blocked
@@ -184,18 +188,31 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
         best = None  # (seconds, path) of the longest copy seen, in case every copy is short.
         try:
-            for attempt, (with_cookies, with_proxy) in enumerate(download_routes()):
+            routes = download_routes()
+            # After the usual routes, ask YouTube as other apps: a stream served cut short to
+            # one client is often complete for another.
+            attempts = [(cookies, proxy, None) for cookies, proxy in routes]
+            attempts += [(routes[0][0], routes[0][1], client) for client in ALTERNATE_CLIENTS]
+            for attempt, (with_cookies, with_proxy, client) in enumerate(attempts):
+                if client and best is None:
+                    break  # Alternate clients only help with truncated copies.
                 if attempt:
                     route = (("signed in" if with_cookies else "signed out")
-                             + (" through the proxy" if with_proxy else " directly"))
+                             + (" through the proxy" if with_proxy else " directly")
+                             + (f" as {client}" if client else ""))
                     print(f"  retrying {route}.", file=sys.stderr, flush=True)
+                extra = ["--extractor-args", f"youtube:player_client={client}"] if client else []
                 download = subprocess.run(
-                    youtube(signed_in=with_cookies, proxy=with_proxy) + command,
+                    youtube(signed_in=with_cookies, proxy=with_proxy) + extra + command,
                     stderr=subprocess.PIPE, text=True,
                     timeout=min(timeout, max(20, stop_at - time.monotonic())))
                 if not download.returncode:
                     got = _downloaded(scratch, video_id)
-                    length = (media_length(got) or 0) if got else 0
+                    # For music, count only the stretch that has sound: some copies run the full
+                    # length but fall silent partway.
+                    length = ((audible_span(got) if audio else media_length(got)) or 0) if got else 0
+                    if audio:
+                        duration = min(duration, MAX_SOURCE_SECONDS)
                     if got and (duration <= 30 or length >= duration * 0.85):
                         if best:
                             best[1].unlink(missing_ok=True)  # Drop the earlier, shorter copy.
@@ -263,6 +280,32 @@ COMPILATIONS = {"focus", "study", "studying", "sleep", "sleeping", "relax", "rel
                 "mashup", "medley", "workout", "gaming"}
 
 
+TRACK_NUMBER = re.compile(r"^\s*\d{1,3}\s*[.)\-–—:]\s*")
+
+
+def cue_key(name, title, composer=""):
+    """Words naming the cue itself, so two uploads of the same track can be told apart.
+
+    '01. Fog Bound (Pirates of the Caribbean Complete Score)' and 'Pirates Of The Caribbean
+    (Complete Score) - Fog Bound' both give {'fog', 'bound'}. Whole-album uploads give an
+    empty set and are never treated as duplicates.
+    """
+    words = terms(TRACK_NUMBER.sub("", name)) - terms(title) - terms(composer) - GENERIC - LINKING_WORDS
+    return frozenset(word for word in words if not YEAR.fullmatch(word))
+
+
+def distinct_cues(candidates, title, composer=""):
+    """Keep the best-ranked upload of each named cue."""
+    seen, kept = set(), []
+    for candidate in candidates:
+        key = cue_key(candidate[1][2], title, composer)
+        if key and key in seen:
+            continue
+        seen.add(key)
+        kept.append(candidate)
+    return kept
+
+
 def sources_for(title, scratch, composer="", seconds=3600, others=()):
     queries = ("official soundtrack", "full soundtrack", "original score", "complete score")
     if composer:
@@ -278,9 +321,10 @@ def sources_for(title, scratch, composer="", seconds=3600, others=()):
         (30, 7200), artists=[part for part in composer.split(" & ") if part], others=others,
         prefer_long=True,
     )
+    candidates = distinct_cues(candidates, title, composer)
     # Gather at least as much distinct music as the video is long (capped), from several uploads.
     budget = min(2 * MAX_SOURCE_SECONDS, max(1800, seconds))
-    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 8, budget, 16)
+    files, credits = download_uploads(candidates, scratch, "bestaudio/best", 16, budget, 24, audio=True)
     if not files:
         signed_in = bool(os.environ.get("SOUNDTRACK_COOKIES"))
         hint = ("The YOUTUBE_COOKIES secret was used; if the log shows a sign-in or bot check, "

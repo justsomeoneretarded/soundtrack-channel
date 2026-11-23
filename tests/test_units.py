@@ -254,6 +254,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
     assert len(files) == 2 and calls[-1][1] == 300
 
     monkeypatch.setattr(sources, "matching_uploads", lambda *args, **kwargs: candidates)
+    monkeypatch.setattr(sources, "audible_span", lambda path: 120.0)
     files, _ = sources.sources_for("Dune", tmp_path / "s", "Hans Zimmer")
     assert len(files) == 2
 
@@ -485,3 +486,42 @@ def test_media_length_sees_truncated_files(tmp_path):
     cut.write_bytes(full.read_bytes()[:len(full.read_bytes()) // 6])
     assert media_duration(cut) > 100  # The header still claims the full length.
     assert media_length(cut) < 40 and abs(media_length(full) - 120) < 1
+    # Timestamps that jump to the end (as in a real Actions download) must not count as audio.
+    gap = tmp_path / "gap.webm"
+    sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=40", "-af", "asetpts='if(gte(T,20),PTS+600/TB,PTS)'",
+            "-c:a", "libopus", "-b:a", "64k", str(gap)], check=True)
+    assert media_duration(gap) > 600 and abs(media_length(gap) - 40) < 1
+
+
+def test_audible_span_ignores_a_silent_tail(tmp_path):
+    import shutil
+    import subprocess as sp
+
+    from soundtrack.common import audible_span, media_length
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is required")
+    path = tmp_path / "silent-tail.webm"
+    sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=220:duration=60", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=240",
+            "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1", "-c:a", "libopus", "-b:a", "64k",
+            str(path)], check=True)
+    assert abs(media_length(path) - 300) < 2  # All the data is there...
+    assert abs(audible_span(path) - 60) < 3   # ...but only a minute of it is sound.
+
+
+def test_distinct_cues_drops_second_upload_of_same_track():
+    from soundtrack import sources
+
+    title = "Pirates of the Caribbean: The Curse of the Black Pearl (2003)"
+    names = [
+        "Pirates of the Caribbean (2003) - Full Official Soundtrack",
+        "01. Fog Bound (Pirates of the Caribbean: The Curse of the Black Pearl Complete Score)",
+        "Pirates Of The Caribbean (Complete Score) - Fog Bound",
+        "Pirates of the Caribbean- Original  Soundtrack",
+        "Pirates Of The Caribbean (Complete Score) - Sacking The Village (Part 1)",
+        "Pirates Of The Caribbean (Complete Score) - Sacking The Village (Part 2)",
+    ]
+    kept = sources.distinct_cues([(str(i), (0, 60, n)) for i, n in enumerate(names)], title, "Klaus Badelt")
+    assert [video_id for video_id, _ in kept] == ["0", "1", "3", "4", "5"]
