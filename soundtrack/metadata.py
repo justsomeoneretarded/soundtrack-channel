@@ -96,13 +96,11 @@ def describe(title, seconds, style, composer, chapter_list, cues, credits, visua
     if composer:
         opening += f" Music by {composer}."
     if style == "album":
-        shape = ("Each cue plays in full and flows into the next with gentle crossfades, "
-                 "paired with an eclipse nightscape and audio-reactive visualizer.")
+        shape = "Each cue plays in full and flows into the next with gentle crossfades."
     else:
-        shape = ("The edit moves through quieter passages, fuller arrangements and a final resolution, "
-                 "paired with an eclipse nightscape and audio-reactive visualizer.")
+        shape = "The edit moves through quieter passages, fuller arrangements and a final resolution."
     if visual_credits:
-        shape += " Selected scene cutaways are paired with the score."
+        shape += " The picture is a continuous reel of scenes from the film."
     blocks = [f"{opening} {shape}"]
     if chapter_list:
         heading = "Tracklist" if style == "album" else "Chapters"
@@ -157,7 +155,7 @@ def write_outputs(out, *, title, seconds, style, composer, timeline, labels, cha
         "visual_sources": [{"name": name, "url": link or None} for name, link in visual_credits],
         "character_names_searched": list(characters),
         "recurring_characters_found": people,
-        "scene_cutaways": scenes,
+        "reel_shots": scenes,
         "loudness": loudness,
         "short": short,
     }

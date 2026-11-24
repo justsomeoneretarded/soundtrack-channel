@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
 from .common import FFMPEG, YEAR
 from .sources import download_uploads, matching_uploads
@@ -176,15 +176,16 @@ def characters_for(title, limit=4):
 
 def gather(title, scratch, characters=(), others=()):
     """Download trailers, official clips, and scenes featuring the named characters."""
-    queries = ["official trailer", "official clip"]
+    # Scene uploads first: trailers cut fast and carry title cards.
+    queries = ["best scenes", "official clip"]
     queries += [f"{character} scene" for character in characters[:4]]
-    queries += ["best scenes"]
+    queries += ["scene", "official trailer"]
     candidates = matching_uploads(title, queries, SCENE_WORDS, NOT_SCENES, (20, 900), interleave=True,
                                   others=others)
     return download_uploads(
         candidates, scratch,
         "bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best[height<=720]",
-        6, 2400, 12, timeout=300,
+        10, 4800, 16, timeout=300,
     )
 
 
@@ -431,7 +432,7 @@ def _weight(person, recognised):
     return PERSON_WEIGHTS[person] if 0 <= person < len(PERSON_WEIGHTS) else 0.25
 
 
-def candidate_windows(analysis, shortest=5.0, longest=10.0):
+def candidate_windows(analysis, shortest=5.0, longest=10.0, base_weight=0.15):
     main = {person for person, _, _ in analysis.people}
     by_video = {}
     for face in analysis.faces:
@@ -456,7 +457,7 @@ def candidate_windows(analysis, shortest=5.0, longest=10.0):
                              * (0.45 + 0.55 * face.quality) * (0.7 + 0.3 * face.frontal))
                     if value > best:
                         best, owner = value, person
-            scores.append(0.15 * base + best)
+            scores.append(base_weight * base + best)
             owners.append(owner)
         for first in range(len(shots)):
             start = max(shots[first][0], lo)
@@ -502,51 +503,9 @@ def choose(windows, count):
     return chosen
 
 
-def default_count(seconds):
-    if seconds < 12:
-        return 0
-    if seconds < 60:
-        return 2
-    return max(4, min(16, round(seconds / 400)))
+# --------------------------------------------------------------------------- stills
 
-
-def plan_scenes(analysis, seconds, count=None):
-    """Place the best scenes through the video; the strongest lands near the climax.
-
-    Returns (scenes, details): scenes as (path, source_start, length, output_start).
-    """
-    count = default_count(seconds) if count is None else max(0, min(count, 24))
-    if count == 0 or not analysis.videos:
-        return [], []
-    longest = min(10.0, max(3.0, seconds * 0.1))
-    shortest = min(5.0, longest)
-    picks = choose(candidate_windows(analysis, shortest, longest), count)
-    if not picks:
-        return [], []
-    # Leave out filler that is far weaker than the best scene, keeping at least two.
-    strongest = max(window.score for window in picks)
-    picks = [w for w in picks if w.score >= strongest * 0.3] or picks
-    if len(picks) < 2:
-        picks = sorted(choose(candidate_windows(analysis, shortest, longest), 2), key=lambda w: -w.score)
-    moments = [(index + 0.6) / (len(picks) + 0.2) * 0.92 for index in range(len(picks))]
-    slots = sorted(range(len(moments)), key=lambda i: abs(moments[i] - 0.8))
-    ordered = sorted(picks, key=lambda w: -w.score)
-    placed = sorted(zip((moments[i] for i in slots), ordered), key=lambda pair: pair[0])
-    scenes, details = [], []
-    for fraction, window in placed:
-        video = analysis.videos[window.video]
-        when = round(seconds * fraction, 3)
-        length = round(window.end - window.start, 3)
-        scenes.append((video.path, window.start, length, when))
-        details.append({"start": when, "length": length, "source": video.credit[0],
-                        "source_start": window.start, "character": window.person,
-                        "score": round(window.score, 3)})
-    return scenes, details
-
-
-# --------------------------------------------------------------------------- portraits
-
-def _still(path, moment):
+def still(path, moment):
     with tempfile.TemporaryDirectory() as temp:
         target = Path(temp) / "still.png"
         subprocess.run(FFMPEG + ["-ss", f"{moment:.3f}", "-i", str(path), "-map", "0:v:0",
@@ -555,65 +514,3 @@ def _still(path, moment):
             return None
         with Image.open(target) as image:
             return image.convert("RGB")
-
-
-def _portrait_crop(image, box):
-    x, y, w, h = box
-    cx, cy = x + w / 2, y + h / 2
-    crop_w = min(image.width, image.height * 0.91, max(image.width * 0.26, w * 3.5))
-    crop_h = crop_w / 0.91
-    left = max(0, min(image.width - crop_w, cx - crop_w / 2))
-    top = max(0, min(image.height - crop_h, cy - crop_h * 0.37))
-    crop = image.crop((int(left), int(top), int(left + crop_w), int(top + crop_h)))
-    return ImageOps.fit(crop, (420, 462), Image.Resampling.LANCZOS)
-
-
-def _framing(box):
-    """Prefer faces that sit in the upper part of the frame at a size a portrait crop can hold."""
-    _, y, _, h = box
-    centre, height = (y + h / 2) / FRAME_H, h / FRAME_H
-    placement = 1.0 if centre < 0.55 else max(0.2, 1 - (centre - 0.55) * 3)
-    size = 1.0 if 0.12 <= height <= 0.42 else 0.55
-    return placement * size
-
-
-def portraits(analysis, limit=4):
-    """{person: portrait image} for the main characters (or the single best face without models)."""
-    if not analysis.faces:
-        return {}
-    import cv2
-
-    people = [person for person, _, _ in analysis.people][:limit] if analysis.recognised else []
-    people = people or [-1]
-    detector, _ = load_models() if analysis.recognised else (None, None)
-    result = {}
-    for person in people:
-        candidates = [f for f in analysis.faces if (person == -1 or f.person == person) and f.area > 0.012]
-        candidates.sort(key=lambda f: -(f.quality * (0.4 + 0.6 * f.frontal) * min(1.0, math.sqrt(f.area) * 4)
-                                        * _framing(f.box)))
-        for face in candidates[:4]:
-            video = analysis.videos[face.video]
-            image = _still(video.path, face.time)
-            if image is None:
-                continue
-            width, height = image.size
-            scale = min(FRAME_W / width, FRAME_H / height)
-            ox, oy = (FRAME_W - width * scale) / 2, (FRAME_H - height * scale) / 2
-            x, y, w, h = face.box
-            box = ((x - ox) / scale, (y - oy) / scale, w / scale, h / scale)
-            if detector is not None:
-                # Re-detect at full resolution so the crop centres on the face in this exact frame.
-                bgr = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
-                detector.setInputSize((width, height))
-                _, rows = detector.detect(bgr)
-                detector.setInputSize((FRAME_W, FRAME_H))
-                if rows is None or not len(rows):
-                    continue
-                centre = np.array([box[0] + box[2] / 2, box[1] + box[3] / 2])
-                row = min(rows, key=lambda r: np.linalg.norm(r[:2] + r[2:4] / 2 - centre))
-                if np.linalg.norm(row[:2] + row[2:4] / 2 - centre) > max(box[2], 40):
-                    continue
-                box = tuple(float(v) for v in row[:4])
-            result[person] = _portrait_crop(image, box)
-            break
-    return result

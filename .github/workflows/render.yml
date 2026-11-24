@@ -65,12 +65,16 @@ jobs:
             chmod +x ffmpeg ffprobe
             echo "$toolkit" >> "$GITHUB_PATH"
           fi
+          # Inter sets the on-screen type; DejaVu Sans is the fallback.
+          sudo apt-get install -y -qq fonts-inter >/dev/null 2>&1 ||
+            { sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter >/dev/null; } ||
+            echo "::warning::Could not install the Inter font; titles will use DejaVu Sans."
           if [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ] ||
-             [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf ]; then
+             [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]; then
             fonts="$RUNNER_TEMP/soundtrack-fonts"
             mkdir -p "$fonts"
             upstream=https://raw.githubusercontent.com/matplotlib/matplotlib/v3.10.0/lib/matplotlib/mpl-data/fonts/ttf
-            for font in DejaVuSans-Bold.ttf DejaVuSansMono.ttf; do
+            for font in DejaVuSans-Bold.ttf DejaVuSans.ttf; do
               curl -fsSL --retry 2 --max-time 30 "$upstream/$font" -o "$fonts/$font"
             done
             echo "SOUNDTRACK_FONT_DIR=$fonts" >> "$GITHUB_ENV"
