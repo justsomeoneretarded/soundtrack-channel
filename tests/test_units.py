@@ -177,7 +177,7 @@ def test_reel_alternates_videos_and_fills_the_video(tmp_path, monkeypatch):
     repeats = sum(a.video == b.video for a, b in zip(shots, shots[1:]))
     assert repeats <= abs(counts[0] - counts[1])  # Neighbours come from different videos.
     assert reel.best_shot(shots).person == 0
-    monkeypatch.setattr(reel, "_chunk", lambda group, output, draft: (output.touch(), 40.0)[1])
+    monkeypatch.setattr(reel, "_chunk", lambda group, output, draft, mask: (output.touch(), 40.0)[1])
     listing, unique = reel.build_reel(shots * 3, tmp_path, 600, seed=1)
     files = [line for line in listing.read_text().splitlines() if line.startswith("file")]
     assert unique == 40.0 * len(set(files)) and len(files) * 40 >= 605
@@ -262,7 +262,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
 
     monkeypatch.setattr(footage, "matching_uploads", lambda *args, **kwargs: candidates)
     files, _ = footage.gather("Dune", tmp_path / "v", ["Paul Atreides"])
-    assert len(files) == 2 and calls[-1][1] == 300
+    assert len(files) == 2 and calls[-1][1] == 420 and "700M" in calls[-1][0]
 
     monkeypatch.setattr(sources, "matching_uploads", lambda *args, **kwargs: candidates)
     monkeypatch.setattr(sources, "audible_span", lambda path: 120.0)

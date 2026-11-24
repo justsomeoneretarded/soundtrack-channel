@@ -162,7 +162,7 @@ UNAVAILABLE = re.compile(r"content isn.t available|video unavailable", re.IGNORE
 
 
 def download_uploads(candidates, scratch, stream_format, limit, budget, attempts, timeout=240,
-                     deadline_minutes=12, audio=False):
+                     deadline_minutes=12, audio=False, max_size="200M"):
     """Download the best candidates within a time limit.
 
     Stops early when YouTube keeps answering with sign-in or rate-limit checks, so a blocked
@@ -184,7 +184,7 @@ def download_uploads(candidates, scratch, stream_format, limit, budget, attempts
         url = f"https://www.youtube.com/watch?v={video_id}"
         began = time.monotonic()
         print(f"Downloading {name!r} ({duration:.0f}s)…", flush=True)
-        command = ["--no-progress", "-f", stream_format, "--max-filesize", "200M",
+        command = ["--no-progress", "-f", stream_format, "--max-filesize", max_size,
                    "-o", str(scratch / f"{video_id}.%(ext)s"), url]
         best = None  # (seconds, path) of the longest copy seen, in case every copy is short.
         try:

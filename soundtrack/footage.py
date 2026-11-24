@@ -44,13 +44,16 @@ PERSON_WEIGHTS = (1.0, 0.88, 0.78, 0.7)
 ANALYSE_SECONDS = 900
 USER_AGENT = "soundtrack-video/1.0 (open-source renderer)"
 
-SCENE_WORDS = {"scene", "scenes", "clip", "clips", "trailer", "teaser", "moment", "moments"}
+SCENE_WORDS = {"scene", "scenes", "scenepack", "clip", "clips", "trailer", "teaser", "moment", "moments"}
 NOT_SCENES = {
     "reaction", "reacts", "fan", "remake", "recap", "breakdown", "concept", "soundtrack", "gameplay",
     "review", "parody", "explained", "explain", "ai", "interview", "featurette", "behind", "bts",
     "making", "premiere", "podcast", "press", "junket", "cast", "edit", "amv", "shorts", "lego",
     "animatic", "cosplay", "theory", "theories", "ranking", "ranked", "analysis", "deleted",
 }
+# Trailers cut fast and carry title cards and logos; they are only a fallback.
+TRAILERS = {"trailer", "trailers", "teaser", "spot"}
+VIDEO_FORMAT = "bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best[height<=720]"
 
 
 # --------------------------------------------------------------------------- characters
@@ -175,18 +178,26 @@ def characters_for(title, limit=4):
 
 
 def gather(title, scratch, characters=(), others=()):
-    """Download trailers, official clips, and scenes featuring the named characters."""
-    # Scene uploads first: trailers cut fast and carry title cards.
-    queries = ["best scenes", "official clip"]
-    queries += [f"{character} scene" for character in characters[:4]]
-    queries += ["scene", "official trailer"]
-    candidates = matching_uploads(title, queries, SCENE_WORDS, NOT_SCENES, (20, 900), interleave=True,
-                                  others=others)
-    return download_uploads(
-        candidates, scratch,
-        "bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best[height<=720]",
-        10, 4800, 16, timeout=300,
-    )
+    """Download long scene compilations and clips featuring the named characters.
+
+    Longer uploads come first: a scene pack holds many clean shots, where a trailer has a
+    few seconds between title cards. Trailers are searched only when too little else is found.
+    """
+    queries = ["scene pack", "best scenes"]
+    queries += [f"{character} scenes" for character in characters[:4]]
+    queries += ["all scenes", "official clip"]
+    candidates = matching_uploads(title, queries, SCENE_WORDS, NOT_SCENES | TRAILERS, (30, 1500),
+                                  interleave=True, others=others, prefer_long=True)
+    files, credits = download_uploads(candidates, scratch, VIDEO_FORMAT, 10, 7200, 18, timeout=420,
+                                      deadline_minutes=15, max_size="700M")
+    if len(files) < 3:
+        trailers = matching_uploads(title, ["official trailer"], SCENE_WORDS, NOT_SCENES, (20, 400),
+                                    others=others)
+        trailers = [item for item in trailers if item[0] not in {path.stem for path in files}]
+        more, more_credits = download_uploads(trailers, scratch, VIDEO_FORMAT, 3 - len(files), 900, 6,
+                                              timeout=300)
+        files, credits = files + more, credits + more_credits
+    return files, credits
 
 
 # --------------------------------------------------------------------------- analysis
