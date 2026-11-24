@@ -133,7 +133,7 @@ def write_ffmetadata(path, title, chapter_list, seconds):
 
 def write_outputs(out, *, title, seconds, style, composer, timeline, labels, chapter_list,
                   credits, visual_credits, loudness, scenes, short, characters=(), people=0,
-                  title_options=(), thumbnails=(), popularity=0):
+                  title_options=(), thumbnails=(), popularity=0, tmdb=None):
     cues = featured(timeline, labels)
     search_title = video_title(title, seconds, style, composer)
     heading = title_options[0] if title_options else search_title
@@ -155,6 +155,7 @@ def write_outputs(out, *, title, seconds, style, composer, timeline, labels, cha
         "search_title": search_title,
         "thumbnails": list(thumbnails),
         "wikipedia_editions": popularity,
+        "tmdb": tmdb,
         "chapters": [{"start": start, "timestamp": timestamp(start), "title": label}
                      for start, label in chapter_list],
         "timeline": [{"start": round(start, 3), "source": source, "cue": labels[source]}

@@ -154,6 +154,8 @@ jobs:
           SOUNDTRACK_MINUTES: ${{ inputs.minutes }}
           SOUNDTRACK_AUDIO_URLS: ${{ inputs.audio_urls }}
           SOUNDTRACK_CHARACTERS: ${{ inputs.characters }}
+          # Optional: official stills and cast for thumbnails (the same secret Top10-Movies uses).
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
           case "$SOUNDTRACK_MINUTES" in
             ''|*[!0-9]*) echo "::error::minutes must be a whole number" >&2; exit 1 ;;

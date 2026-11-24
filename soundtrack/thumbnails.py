@@ -218,6 +218,91 @@ def fallback_frames(shots, grab, count=3):
     return [frame for _, frame in frames[:count]]
 
 
+SAME_PERSON = 0.36  # SFace cosine similarity for "same person"; the model authors suggest 0.363.
+HONORIFICS = {"captain", "capt", "dr", "doctor", "mr", "mrs", "ms", "miss", "sir", "lord", "lady",
+              "professor", "agent", "detective", "general", "major", "colonel", "lieutenant"}
+
+
+def short_character(name):
+    """'Captain Jack Sparrow' -> 'Jack Sparrow' (only when a full name remains)."""
+    words = name.split()
+    if len(words) >= 3 and words[0].strip(".").casefold() in HONORIFICS:
+        return " ".join(words[1:])
+    return name
+
+
+def _embedded_faces(image, detector, recognizer):
+    """[(box, confidence, embedding)] in the image's own pixels, using YuNet and SFace."""
+    import cv2
+
+    small = image if image.width <= 1280 else image.resize((1280, round(image.height * 1280 / image.width)))
+    scale = image.width / small.width
+    bgr = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2BGR)
+    detector.setInputSize((small.width, small.height))
+    _, rows = detector.detect(bgr)
+    found = []
+    for row in rows if rows is not None else []:
+        x, y, w, h = (float(v) for v in row[:4])
+        if w < 24 or h < 24:
+            continue
+        embedding = recognizer.feature(recognizer.alignCrop(bgr, row)).flatten().astype(np.float32)
+        embedding /= max(float(np.linalg.norm(embedding)), 1e-6)
+        found.append(((x * scale, y * scale, w * scale, h * scale), float(row[-1]), embedding))
+    return found
+
+
+def _calm(image):
+    small = np.asarray(image.convert("L").resize((320, 180)), dtype=np.float32)
+    busy = float(np.abs(np.diff(small, axis=1)).mean() + np.abs(np.diff(small, axis=0)).mean())
+    return 1.0 / (1.0 + max(0.0, busy - 10) / 8), small
+
+
+def tmdb_frames(info, cache, count=3, models=None):
+    """Rank official TMDB stills for thumbnails. Returns (frames, lead_seen).
+
+    frames: [(image, face_box or None, person)] where person is 0 for the lead actor
+    (matched against their TMDB headshot) and -1 otherwise; the lead's best still is first.
+    """
+    from .footage import load_models
+    from .tmdb import fetch
+
+    detector, recognizer = models or load_models()
+    lead_embedding = None
+    cast = info.get("cast") or []
+    if detector is not None and cast and cast[0].get("profile"):
+        headshot = fetch(cast[0]["profile"], cache, "h632", 1280)
+        faces = _embedded_faces(headshot, detector, recognizer) if headshot else []
+        if faces:
+            lead_embedding = max(faces, key=lambda face: face[0][2] * face[0][3])[2]
+    scored = []
+    for path in info.get("backdrops", [])[:12]:
+        image = fetch(path, cache)
+        if image is None:
+            continue
+        image, _ = crop_bars(image)
+        faces = _embedded_faces(image, detector, recognizer) if detector is not None else []
+        lead_face = None
+        if lead_embedding is not None:
+            matches = [face for face in faces if float(face[2] @ lead_embedding) >= SAME_PERSON]
+            lead_face = max(matches, key=lambda face: face[0][2] * face[0][3]) if matches else None
+        subject = lead_face or (max(faces, key=lambda face: face[0][2] * face[0][3]) if faces else None)
+        calm, small = _calm(image)
+        sharp = min(1.0, _sharpness(small) / 500)
+        exposure = 1.0 if 35 < small.mean() < 190 else 0.6
+        area = subject[0][2] * subject[0][3] / (image.width * image.height) if subject else 0.0
+        presence = (0.6 + min(1.0, math.sqrt(area) * 5)) if subject else 0.5
+        crowd = 1.0 if len(faces) <= 2 else 0.85 if len(faces) <= 3 else 0.6
+        score = presence * (0.4 + 0.6 * sharp) * calm * exposure * crowd * (1.4 if lead_face else 1.0)
+        scored.append((score, (image, subject[0] if subject else None, 0 if lead_face else -1)))
+    scored.sort(key=lambda item: -item[0])
+    frames = [frame for _, frame in scored]
+    leads = [frame for frame in frames if frame[2] == 0]
+    if leads:
+        frames.remove(leads[0])
+        frames.insert(0, leads[0])
+    return frames[:count], bool(leads)
+
+
 # --------------------------------------------------------------------------- layout
 
 def frame_to_canvas(image, face, side):

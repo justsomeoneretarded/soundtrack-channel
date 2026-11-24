@@ -15,7 +15,9 @@ from .footage import analyse, gather, still, work_details
 from .reel import build_reel, frame_size, plan_reel
 from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
-from .thumbnails import candidate_frames, fallback_frames, make_thumbnails, named_people, short_name
+from .thumbnails import (candidate_frames, fallback_frames, make_thumbnails, named_people, short_character,
+                         short_name, tmdb_frames)
+from .tmdb import POPULAR_VOTES, lookup as tmdb_lookup
 from .titles import POPULAR_SITELINKS, title_options
 from .visuals import plain_backdrop, short_overlay, text_timeline
 
@@ -77,6 +79,11 @@ def main(argv=None):
         if youtube_audio or youtube_clips:
             found_characters, others, popularity = work_details(title)
             characters = characters or found_characters
+        tmdb_info = tmdb_lookup(title)
+        if tmdb_info and not args.characters:
+            # TMDB lists characters in billing order, so the lead comes first.
+            billed_names = [short_character(person["character"]) for person in tmdb_info["cast"]]
+            characters = list(dict.fromkeys(billed_names[:4] + characters))[:4]
         stage("Finding audio.")
         if args.audio:
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
@@ -114,12 +121,19 @@ def main(argv=None):
         reel, _ = build_reel(shots, scratch / "reel", seconds, seed, args.draft)
         backdrop = plain_backdrop(scratch / "backdrop.png")
         preview = length_label(seconds).endswith("Preview")
-        # Name a character only when their face has been matched to their name.
-        named = named_people(analysis, characters) if analysis.recognised else {}
-        lead = next((name for name in characters if name in named), "")
-        titles = title_options(title, lead or (characters[0] if characters else ""),
-                               popularity >= POPULAR_SITELINKS, seed)
-        frames = candidate_frames(analysis, still, lead=named.get(lead)) if analysis.faces else []
+        billed = short_character(tmdb_info["cast"][0]["character"]) if tmdb_info and tmdb_info["cast"] else ""
+        popular = popularity >= POPULAR_SITELINKS or bool(tmdb_info and tmdb_info["votes"] >= POPULAR_VOTES)
+        titles = title_options(title, billed or (characters[0] if characters else ""), popular, seed)
+        # Official TMDB stills first; frames from the downloaded footage otherwise. A character is
+        # named on a thumbnail only when their face is matched to them.
+        frames, lead = [], ""
+        if tmdb_info and tmdb_info["backdrops"]:
+            frames, lead_seen = tmdb_frames(tmdb_info, scratch / "tmdb")
+            lead = billed if lead_seen else ""
+        if not frames:
+            named = named_people(analysis, characters) if analysis.recognised else {}
+            lead = next((name for name in characters if name in named), "")
+            frames = candidate_frames(analysis, still, lead=named.get(lead)) if analysis.faces else []
         if len(frames) < 3 and shots:
             frames += fallback_frames(shots, still, 3 - len(frames))
         if not frames:
@@ -157,5 +171,7 @@ def main(argv=None):
                       timeline=timeline, labels=labels, chapter_list=chapter_list, credits=credits,
                       visual_credits=visual_credits, loudness=loudness, scenes=shot_details, short=short,
                       characters=characters, people=len(analysis.people), title_options=titles,
-                      thumbnails=[path.name for path in thumbnails], popularity=popularity)
+                      thumbnails=[path.name for path in thumbnails], popularity=popularity,
+                      tmdb=({"id": tmdb_info["id"], "kind": tmdb_info["kind"], "votes": tmdb_info["votes"]}
+                            if tmdb_info else None))
     print(f"Finished in {time.monotonic() - began:.0f}s. Outputs are in {args.out}/.", flush=True)

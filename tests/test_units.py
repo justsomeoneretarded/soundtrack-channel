@@ -575,3 +575,34 @@ def test_thumbnails_keep_text_off_the_face(tmp_path):
     paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path)
     assert [path.name for path in paths] == ["thumbnail.jpg", "thumbnail-2.jpg", "thumbnail-3.jpg"]
     assert all(Image.open(path).size == SIZE for path in paths)
+
+
+def test_tmdb_summary_prefers_text_free_stills_and_billing_order():
+    from soundtrack.thumbnails import short_character
+    from soundtrack.tmdb import clean_character, details_summary, pick_result
+
+    details = {
+        "id": 22, "title": "Pirates of the Caribbean: The Curse of the Black Pearl", "vote_count": 21000,
+        "credits": {"cast": [{"order": 1, "name": "Geoffrey Rush", "character": "Captain Barbossa"},
+                             {"order": 0, "name": "Johnny Depp", "character": "Captain Jack Sparrow",
+                              "profile_path": "/depp.jpg"}]},
+        "images": {"backdrops": [
+            {"file_path": "/titled.jpg", "width": 3840, "iso_639_1": "en", "vote_average": 9},
+            {"file_path": "/small.jpg", "width": 780, "iso_639_1": None, "vote_average": 9},
+            {"file_path": "/clean.jpg", "width": 1920, "iso_639_1": None, "vote_average": 5}]},
+    }
+    summary = details_summary(details, "movie")
+    assert summary["backdrops"] == ["/clean.jpg", "/titled.jpg"] and summary["textless"] == 1
+    assert summary["cast"][0] == {"name": "Johnny Depp", "character": "Captain Jack Sparrow", "profile": "/depp.jpg"}
+    assert short_character("Captain Jack Sparrow") == "Jack Sparrow"
+    assert short_character("Captain America") == "Captain America"
+    assert clean_character("Gollum / Sméagol (voice)") == "Gollum"
+    results = [{"id": 1, "release_date": "2017-05-24"}, {"id": 2, "release_date": "2003-07-09"}]
+    assert pick_result(results, "2003", "movie")["id"] == 2
+
+
+def test_tmdb_is_skipped_without_a_token(monkeypatch):
+    from soundtrack import tmdb
+
+    monkeypatch.delenv("TMDB_READ_TOKEN", raising=False)
+    assert tmdb.lookup("Dune (2021)") is None
