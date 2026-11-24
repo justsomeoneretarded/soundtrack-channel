@@ -534,3 +534,117 @@ def test_distinct_cues_drops_second_upload_of_same_track():
     ]
     kept = sources.distinct_cues([(str(i), (0, 60, n)) for i, n in enumerate(names)], title, "Klaus Badelt")
     assert [video_id for video_id, _ in kept] == ["0", "1", "3", "4", "5"]
+
+
+def test_title_options_follow_the_style_rules():
+    from soundtrack.titles import title_options
+
+    title = "Pirates of the Caribbean: The Curse of the Black Pearl (2003)"
+    popular = title_options(title, "Jack Sparrow", popular=True, seed=3)
+    assert len(popular) == len(set(popular)) == 5
+    assert popular[0] == "Pirates of the Caribbean music to work with Jack Sparrow"
+    assert sum(" | " in option for option in popular) == 3
+    assert all(len(option) <= 100 for option in popular)
+    niche = title_options(title, "Jack Sparrow", popular=False, seed=3)
+    assert niche.index("Pirates of the Caribbean music to work with Jack Sparrow") == 3
+    assert title_options("Dune (2021)", "", seed=1)[0] != title_options("Dune (2021)", "", seed=2)[0]
+
+
+def test_names_match_faces_through_video_titles():
+    from soundtrack.thumbnails import named_people
+
+    analysis = _analysis()
+    analysis.videos[0].credit = ("Ava Stone best scenes | Test Film", "")
+    analysis.videos[1].credit = ("Max Kade entrance scene", "")
+    assert named_people(analysis, ["Ava Stone", "Max Kade", "Nobody Here"]) == {"Ava Stone": 0, "Max Kade": 1}
+
+
+def test_thumbnails_keep_text_off_the_face(tmp_path):
+    from PIL import Image
+
+    from soundtrack.thumbnails import SIZE, crop_bars, make_thumbnails, text_region
+
+    frame = Image.new("RGB", (1280, 720), (90, 110, 130))
+    frame.paste((0, 0, 0), (0, 0, 1280, 90))
+    frame.paste((0, 0, 0), (0, 630, 1280, 720))
+    cropped, offset = crop_bars(frame)
+    assert cropped.size == (1280, 540) and offset == (0, 90)
+    face = (760, 140, 180, 200)  # Face on the right: text must not land on it.
+    (x, y), cost = text_region(Image.new("RGB", SIZE, (90, 110, 130)), face, 420, 90)
+    assert cost < 1000
+    assert x + 420 < face[0] - face[2] * 0.7 or y > face[1] + face[3] * 1.3 or y + 90 < face[1] - face[3] * 1.2
+    paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path,
+                            lead_person=0)
+    assert [path.name for path in paths] == ["thumbnail.jpg"] + [f"thumbnail-{n}.jpg" for n in range(2, 11)]
+    assert all(Image.open(path).size == SIZE for path in paths)
+
+
+def test_the_name_goes_only_on_the_lead_characters_frame(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from soundtrack import thumbnails
+
+    named_on = []
+    monkeypatch.setattr(thumbnails, "style_dedication",
+                        lambda canvas, face, name, character: named_on.append((canvas.getpixel((5, 5)), character)) or canvas)
+    other = (Image.new("RGB", (1280, 720), (200, 30, 30)), None, -1)
+    lead = (Image.new("RGB", (1280, 720), (30, 200, 30)), None, 0)
+    thumbnails.make_thumbnails([other, lead], "Test Film (2024)", "Ava Stone", tmp_path, lead_style="headline",
+                               lead_person=0)
+    assert len(named_on) == 1  # One frame of the lead: one named version, not three copies.
+    assert all(character == "Ava Stone" and pixel[1] > pixel[0] for pixel, character in named_on)
+    named_on.clear()  # Only the green (lead) frame carries the name, at most three times.
+    paths = thumbnails.make_thumbnails([other], "Test Film (2024)", "Ava Stone", tmp_path, lead_person=0)
+    assert not named_on and len(paths) == 10  # No frame of the lead: no one is named.
+
+
+def test_ten_thumbnail_plans_vary_style_and_words():
+    from soundtrack.thumbnails import plan_styles
+
+    plan = plan_styles(10, "headline", 0, True)
+    worded = [item for item in plan if item[0] != "dedication"]
+    assert len(plan) == 10 and len(worded) == len(set(worded)) and plan[0][0] == "headline"
+    assert sum(style == "dedication" for style, _ in plan) == 3
+    assert not any(style == "dedication" for style, _ in plan_styles(10, "dedication", 0, False))
+
+
+def test_tmdb_summary_prefers_text_free_stills_and_billing_order():
+    from soundtrack.thumbnails import short_character
+    from soundtrack.tmdb import clean_character, details_summary, pick_result
+
+    details = {
+        "id": 22, "title": "Pirates of the Caribbean: The Curse of the Black Pearl", "vote_count": 21000,
+        "credits": {"cast": [{"order": 1, "name": "Geoffrey Rush", "character": "Captain Barbossa"},
+                             {"order": 0, "name": "Johnny Depp", "character": "Captain Jack Sparrow",
+                              "profile_path": "/depp.jpg"}]},
+        "images": {"backdrops": [
+            {"file_path": "/titled.jpg", "width": 3840, "iso_639_1": "en", "vote_average": 9},
+            {"file_path": "/small.jpg", "width": 780, "iso_639_1": None, "vote_average": 9},
+            {"file_path": "/clean.jpg", "width": 1920, "iso_639_1": None, "vote_average": 5}]},
+    }
+    summary = details_summary(details, "movie")
+    assert summary["backdrops"] == ["/clean.jpg", "/titled.jpg"] and summary["textless"] == 1
+    assert summary["cast"][0] == {"name": "Johnny Depp", "character": "Captain Jack Sparrow", "profile": "/depp.jpg"}
+    assert short_character("Captain Jack Sparrow") == "Jack Sparrow"
+    assert short_character("Captain America") == "Captain America"
+    assert clean_character("Gollum / Sméagol (voice)") == "Gollum"
+    results = [{"id": 1, "release_date": "2017-05-24"}, {"id": 2, "release_date": "2003-07-09"}]
+    assert pick_result(results, "2003", "movie")["id"] == 2
+
+
+def test_tmdb_is_skipped_without_a_token(monkeypatch):
+    from soundtrack import tmdb
+
+    monkeypatch.delenv("TMDB_READ_TOKEN", raising=False)
+    assert tmdb.lookup("Dune (2021)") is None
+
+
+def test_text_prefers_the_darker_side_of_the_frame():
+    from PIL import Image, ImageDraw
+
+    from soundtrack.thumbnails import SIZE, text_region
+
+    canvas = Image.new("RGB", SIZE, (235, 235, 230))  # Bright sky on top...
+    ImageDraw.Draw(canvas).rectangle((0, 360, 1280, 720), fill=(40, 45, 50))  # ...dark ground below.
+    (_, y), _ = text_region(canvas, None, 500, 90)
+    assert y > 360

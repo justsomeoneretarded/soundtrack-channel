@@ -69,6 +69,18 @@ jobs:
           sudo apt-get install -y -qq fonts-inter >/dev/null 2>&1 ||
             { sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter >/dev/null; } ||
             echo "::warning::Could not install the Inter font; titles will use DejaVu Sans."
+          # Thumbnail type: Cinzel (classical serif) and Josefin Sans (thin geometric caps),
+          # open-licensed, pinned to a google/fonts commit and checked by SHA-256.
+          display="$HOME/.cache/soundtrack-fonts"
+          mkdir -p "$display"
+          upstream=https://raw.githubusercontent.com/google/fonts/06bfe0d62a98375cb09c942fa18e68bd32cff057/ofl
+          curl -fsSL --retry 2 --max-time 60 "$upstream/cinzel/Cinzel%5Bwght%5D.ttf" -o "$display/Cinzel[wght].ttf" &&
+          curl -fsSL --retry 2 --max-time 60 "$upstream/josefinsans/JosefinSans%5Bwght%5D.ttf" -o "$display/JosefinSans[wght].ttf" &&
+          (cd "$display" && sha256sum -c <<'CHECKSUMS'
+          f4d83d34d1f6c741193e4acf4b3dff9531e5a67b6aa65228d00a7db72a4e0f34  Cinzel[wght].ttf
+          9255abdb5f393bc51e101abbd07a716a977fd3e15472b1b84b260f426a342bfd  JosefinSans[wght].ttf
+          CHECKSUMS
+          ) || { rm -f "$display"/*.ttf; echo "::warning::Thumbnail fonts unavailable; thumbnails will use fallback type."; }
           if [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ] ||
              [ ! -r /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf ]; then
             fonts="$RUNNER_TEMP/soundtrack-fonts"
@@ -142,6 +154,8 @@ jobs:
           SOUNDTRACK_MINUTES: ${{ inputs.minutes }}
           SOUNDTRACK_AUDIO_URLS: ${{ inputs.audio_urls }}
           SOUNDTRACK_CHARACTERS: ${{ inputs.characters }}
+          # Optional: official stills and cast for thumbnails (the same secret Top10-Movies uses).
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
         run: |
           case "$SOUNDTRACK_MINUTES" in
             ''|*[!0-9]*) echo "::error::minutes must be a whole number" >&2; exit 1 ;;

@@ -128,7 +128,9 @@ def _labels(ids):
 
 
 def work_details(title, limit=4):
-    """(main character names, titles of other works in the same series), best effort.
+    """(main character names, titles of other works in the same series, popularity), best effort.
+
+    Popularity is the number of Wikipedia language editions with an article on the work.
 
     The other titles let searches leave out sequels and prequels, whose music and scenes
     belong to a different film.
@@ -140,13 +142,15 @@ def work_details(title, limit=4):
                            "type": "item", "limit": 8}).get("search", [])
         ids = [item["id"] for item in found]
         if not ids:
-            return [], []
+            return [], [], 0
         entities = _wikidata({"action": "wbgetentities", "ids": "|".join(ids),
-                              "props": "claims|descriptions", "languages": "en"}).get("entities", {})
+                              "props": "claims|descriptions|sitelinks", "languages": "en"}).get("entities", {})
         work = pick_work(ids, entities, year)
         if not work:
-            return [], []
+            return [], [], 0
         entity = entities.get(work, {})
+        popularity = sum(1 for key in entity.get("sitelinks", {}) if key.endswith("wiki")
+                         and key not in {"commonswiki", "specieswiki", "metawiki"})
         roles = character_ids(entity)
         role_labels = _labels(roles[:30])
         series, neighbours = related_ids(entity)
@@ -160,7 +164,7 @@ def work_details(title, limit=4):
         sibling_labels = _labels(siblings)
     except Exception as error:  # Network or format problems only cost the targeted searches.
         print(f"Wikidata lookup skipped: {error}", file=sys.stderr)
-        return [], []
+        return [], [], 0
     names = []
     for role in roles:
         label = re.sub(r"\s*\(.*?\)\s*", " ", role_labels.get(role, "")).strip()
@@ -170,7 +174,8 @@ def work_details(title, limit=4):
     print(f"Characters from Wikidata: {', '.join(names[:limit]) or 'none'}.", flush=True)
     if others:
         print(f"Leaving out other works in the series: {'; '.join(others[:8])}.", flush=True)
-    return names[:limit], others
+    print(f"Wikipedia editions with an article: {popularity}.", flush=True)
+    return names[:limit], others, popularity
 
 
 def characters_for(title, limit=4):

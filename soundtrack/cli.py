@@ -6,14 +6,20 @@ import random
 import tempfile
 import time
 
+from PIL import Image
+
 from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudness, prepare, write_mix
 from .common import clean_composer, length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
 from .footage import analyse, gather, still, work_details
-from .reel import build_reel, frame_size, plan_reel, thumbnail_frame
+from .reel import build_reel, frame_size, plan_reel
 from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
-from .visuals import make_thumbnail, plain_backdrop, short_overlay, text_timeline
+from .thumbnails import (candidate_frames, fallback_frames, make_thumbnails, named_people, short_character,
+                         short_name, tmdb_frames)
+from .tmdb import POPULAR_VOTES, lookup as tmdb_lookup
+from .titles import POPULAR_SITELINKS, title_options
+from .visuals import plain_backdrop, short_overlay, text_timeline
 
 MAX_SECONDS = 3 * 3600
 
@@ -67,12 +73,17 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="soundtrack-") as temp:
         scratch = Path(temp)
         characters = [name.strip() for name in args.characters.split(",") if name.strip()]
-        others = []
+        others, popularity = [], 0
         youtube_audio = not args.audio and not args.audio_url
         youtube_clips = not args.clips and not args.audio
         if youtube_audio or youtube_clips:
-            found_characters, others = work_details(title)
+            found_characters, others, popularity = work_details(title)
             characters = characters or found_characters
+        tmdb_info = tmdb_lookup(title)
+        if tmdb_info and not args.characters:
+            # TMDB lists characters in billing order, so the lead comes first.
+            billed_names = [short_character(person["character"]) for person in tmdb_info["cast"]]
+            characters = list(dict.fromkeys(billed_names[:4] + characters))[:4]
         stage("Finding audio.")
         if args.audio:
             files, credits = args.audio, [(path.stem, "") for path in args.audio]
@@ -109,10 +120,29 @@ def main(argv=None):
         stage("Building the film reel.")
         reel, _ = build_reel(shots, scratch / "reel", seconds, seed, args.draft)
         backdrop = plain_backdrop(scratch / "backdrop.png")
-        frame = thumbnail_frame(shots, still) if reel else None
         preview = length_label(seconds).endswith("Preview")
-        duration = "Preview" if preview else f"{round(seconds / 60)} minutes"
-        make_thumbnail(frame, title, f"Original score  ·  {duration}", args.out / "thumbnail.jpg")
+        billed = short_character(tmdb_info["cast"][0]["character"]) if tmdb_info and tmdb_info["cast"] else ""
+        popular = popularity >= POPULAR_SITELINKS or bool(tmdb_info and tmdb_info["votes"] >= POPULAR_VOTES)
+        titles = title_options(title, billed or (characters[0] if characters else ""), popular, seed)
+        # Official TMDB stills first; frames from the downloaded footage otherwise. A character is
+        # named on a thumbnail only when their face is matched to them.
+        frames, lead, lead_person = [], "", None
+        if tmdb_info and tmdb_info["backdrops"]:
+            frames, lead_seen = tmdb_frames(tmdb_info, scratch / "tmdb")
+            lead, lead_person = (billed, 0) if lead_seen else ("", None)
+        if not frames:
+            named = named_people(analysis, characters) if analysis.recognised else {}
+            lead = next((name for name in characters if name in named), "")
+            lead_person = named.get(lead)
+            frames = candidate_frames(analysis, still, lead=lead_person) if analysis.faces else []
+        if len(frames) < 6 and shots:
+            frames += fallback_frames(shots, still, 6 - len(frames))
+        if not frames:
+            frames = [(Image.open(backdrop).convert("RGB"), None, -1)]
+        # The first thumbnail is paired with the first title, so it must not repeat it.
+        thumbnails = make_thumbnails(frames, title, lead, args.out, seed, lead_person=lead_person,
+                                     lead_style="headline" if titles[0].lower().startswith(
+                                         short_name(title).lower() + " music") else "dedication")
         width, height, _ = frame_size(args.draft)
         text = text_timeline(title, args.composer, [(start, labels[source]) for start, source in timeline],
                              seconds, scratch / "text", (width, height))
@@ -141,5 +171,8 @@ def main(argv=None):
         write_outputs(args.out, title=title, seconds=seconds, style=args.style, composer=args.composer,
                       timeline=timeline, labels=labels, chapter_list=chapter_list, credits=credits,
                       visual_credits=visual_credits, loudness=loudness, scenes=shot_details, short=short,
-                      characters=characters, people=len(analysis.people))
+                      characters=characters, people=len(analysis.people), title_options=titles,
+                      thumbnails=[path.name for path in thumbnails], popularity=popularity,
+                      tmdb=({"id": tmdb_info["id"], "kind": tmdb_info["kind"], "votes": tmdb_info["votes"]}
+                            if tmdb_info else None))
     print(f"Finished in {time.monotonic() - began:.0f}s. Outputs are in {args.out}/.", flush=True)

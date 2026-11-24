@@ -51,10 +51,17 @@ def video_title(title, seconds, style, composer=""):
     if composer:
         options.append(f" Soundtrack | {composer} | {length} {kind}")
     options.append(f" Soundtrack Mix | {length} {kind}" if style == "mix" else f" Soundtrack | {length} {kind}")
-    for suffix in options:
-        if len(title) + len(suffix) <= 100:
-            return title + suffix
-    return title[:100 - len(options[-1])].rstrip() + options[-1]
+    # Shorten at natural points (drop the year, then the subtitle) rather than mid-word.
+    bare = re.sub(r"\s*[(\[]\s*(?:19|20)\d{2}\s*[)\]]", "", title).strip()
+    main = re.split(r":\s+|\s+[-–—]\s+", bare, maxsplit=1)[0].strip()
+    for name in dict.fromkeys((title, bare, main)):
+        for suffix in options:
+            if len(name) + len(suffix) <= 100:
+                return name + suffix
+    words, suffix = main.split(), options[-1]
+    while words and len(" ".join(words)) + len(suffix) > 100:
+        words.pop()
+    return " ".join(words) + suffix
 
 
 def hashtag(text):
@@ -132,12 +139,17 @@ def write_ffmetadata(path, title, chapter_list, seconds):
 
 
 def write_outputs(out, *, title, seconds, style, composer, timeline, labels, chapter_list,
-                  credits, visual_credits, loudness, scenes, short, characters=(), people=0):
+                  credits, visual_credits, loudness, scenes, short, characters=(), people=0,
+                  title_options=(), thumbnails=(), popularity=0, tmdb=None):
     cues = featured(timeline, labels)
-    heading = video_title(title, seconds, style, composer)
+    search_title = video_title(title, seconds, style, composer)
+    heading = title_options[0] if title_options else search_title
     description = describe(title, seconds, style, composer, chapter_list, cues, credits, visual_credits)
     keywords = tags(title, composer, labels, seconds)
     (out / "youtube-title.txt").write_text(heading + "\n", encoding="utf-8")
+    options = list(title_options) or [search_title]
+    (out / "youtube-title-options.txt").write_text(
+        "\n".join(f"{index}. {option}" for index, option in enumerate(options, 1)) + "\n", encoding="utf-8")
     (out / "youtube-description.txt").write_text(description, encoding="utf-8")
     (out / "youtube-tags.txt").write_text(", ".join(keywords) + "\n", encoding="utf-8")
     manifest = {
@@ -146,6 +158,11 @@ def write_outputs(out, *, title, seconds, style, composer, timeline, labels, cha
         "style": style,
         "seconds": seconds,
         "youtube_title": heading,
+        "title_options": list(title_options),
+        "search_title": search_title,
+        "thumbnails": list(thumbnails),
+        "wikipedia_editions": popularity,
+        "tmdb": tmdb,
         "chapters": [{"start": start, "timestamp": timestamp(start), "title": label}
                      for start, label in chapter_list],
         "timeline": [{"start": round(start, 3), "source": source, "cue": labels[source]}
