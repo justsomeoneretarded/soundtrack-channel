@@ -572,9 +572,29 @@ def test_thumbnails_keep_text_off_the_face(tmp_path):
     face = (760, 140, 180, 200)  # Face on the right: text must not land on it.
     x, y = text_region(Image.new("RGB", SIZE, (90, 110, 130)), face, 420, 90)
     assert x + 420 < face[0] - face[2] * 0.7 or y > face[1] + face[3] * 1.3 or y + 90 < face[1] - face[3] * 1.2
-    paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path)
+    paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path,
+                            lead_person=0)
     assert [path.name for path in paths] == ["thumbnail.jpg", "thumbnail-2.jpg", "thumbnail-3.jpg"]
     assert all(Image.open(path).size == SIZE for path in paths)
+
+
+def test_the_name_goes_only_on_the_lead_characters_frame(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from soundtrack import thumbnails
+
+    named_on = []
+    monkeypatch.setattr(thumbnails, "style_dedication",
+                        lambda canvas, face, name, character: named_on.append((canvas.getpixel((5, 5)), character)) or canvas)
+    other = (Image.new("RGB", (1280, 720), (200, 30, 30)), None, -1)
+    lead = (Image.new("RGB", (1280, 720), (30, 200, 30)), None, 0)
+    thumbnails.make_thumbnails([other, lead], "Test Film (2024)", "Ava Stone", tmp_path, lead_style="headline",
+                               lead_person=0)
+    (pixel, character), = named_on
+    assert character == "Ava Stone" and pixel[1] > pixel[0]  # The green (lead) frame carries the name.
+    named_on.clear()
+    thumbnails.make_thumbnails([other], "Test Film (2024)", "Ava Stone", tmp_path, lead_person=0)
+    assert named_on[0][1] == ""  # No frame of the lead: no name.
 
 
 def test_tmdb_summary_prefers_text_free_stills_and_billing_order():

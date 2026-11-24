@@ -376,7 +376,7 @@ def text_region(canvas, face, block_w, block_h):
         if face is not None:
             fx, fy, fw, fh = face
             # Hats and hair reach well above and beside the detected face.
-            head = (fx - fw * 0.7, fy - fh * 1.2, fx + fw * 1.7, fy + fh * 1.3)
+            head = (fx - fw * 0.7, fy - fh * 1.2, fx + fw * 1.7, fy + fh * 1.6)
             overlap_w = max(0, min(region[2], head[2]) - max(region[0], head[0]))
             overlap_h = max(0, min(region[3], head[3]) - max(region[1], head[1]))
             if overlap_w * overlap_h > 0:
@@ -465,26 +465,42 @@ HEADLINES = ["Stay Focused", "Deep Work", "Locked In", "Keep Building"]
 SINGLES = ["Focus"]
 
 
-def make_thumbnails(frames, title, character, out, seed=0, lead_style="dedication"):
+def make_thumbnails(frames, title, character, out, seed=0, lead_style="dedication", lead_person=None):
     """Write thumbnail.jpg, thumbnail-2.jpg and thumbnail-3.jpg; return their paths.
 
     frames: [(image, face_box or None, person)], best first. Words stay at three or fewer
     (plus a small dedication line), and lead_style picks the first version so it does not
     repeat the first title: "headline" when that title already names the work's music.
+    The character is named only on a frame of `lead_person`; without one, the dedication
+    version names no one.
     """
     name = short_name(title)
-    dedication = lambda canvas, face: style_dedication(canvas, face, name, character)  # noqa: E731
-    headline = lambda canvas, face: style_headline(canvas, face, HEADLINES[seed % len(HEADLINES)])  # noqa: E731
-    spaced = lambda canvas, face: style_spaced(canvas, face, SINGLES[seed % len(SINGLES)])  # noqa: E731
-    styles = [dedication, headline, spaced] if lead_style == "dedication" else [headline, dedication, spaced]
+    frames = list(frames)
+    if not frames:
+        return []
+    lead_index = next((index for index, frame in enumerate(frames)
+                       if lead_person is not None and frame[2] == lead_person), None)
+    dedication_name = character if lead_index is not None else ""
+    order = ["dedication", "headline", "spaced"] if lead_style == "dedication" else ["headline", "dedication", "spaced"]
+    # Give the dedication version the lead's frame, and the others the remaining frames in order.
+    remaining = [index for index in range(len(frames)) if index != lead_index]
+    assigned = {}
+    for style in order:
+        if style == "dedication" and lead_index is not None:
+            assigned[style] = lead_index
+        else:
+            assigned[style] = remaining.pop(0) if remaining else (lead_index if lead_index is not None else 0)
+    renderers = {
+        "dedication": lambda canvas, face: style_dedication(canvas, face, name, dedication_name),
+        "headline": lambda canvas, face: style_headline(canvas, face, HEADLINES[seed % len(HEADLINES)]),
+        "spaced": lambda canvas, face: style_spaced(canvas, face, SINGLES[seed % len(SINGLES)]),
+    }
     paths = []
     sides = ["right", "left", "right"]
-    for index, style in enumerate(styles[:3]):
-        if not frames:
-            break
-        image, face, _ = frames[index % len(frames)]
+    for index, style in enumerate(order):
+        image, face, _ = frames[assigned[style] % len(frames)]
         canvas, box = frame_to_canvas(image, face, sides[index])
-        result = style(grade(canvas), box)
+        result = renderers[style](grade(canvas), box)
         path = out / ("thumbnail.jpg" if index == 0 else f"thumbnail-{index + 1}.jpg")
         result.save(path, quality=94)
         paths.append(path)

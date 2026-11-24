@@ -126,20 +126,21 @@ def main(argv=None):
         titles = title_options(title, billed or (characters[0] if characters else ""), popular, seed)
         # Official TMDB stills first; frames from the downloaded footage otherwise. A character is
         # named on a thumbnail only when their face is matched to them.
-        frames, lead = [], ""
+        frames, lead, lead_person = [], "", None
         if tmdb_info and tmdb_info["backdrops"]:
             frames, lead_seen = tmdb_frames(tmdb_info, scratch / "tmdb")
-            lead = billed if lead_seen else ""
+            lead, lead_person = (billed, 0) if lead_seen else ("", None)
         if not frames:
             named = named_people(analysis, characters) if analysis.recognised else {}
             lead = next((name for name in characters if name in named), "")
-            frames = candidate_frames(analysis, still, lead=named.get(lead)) if analysis.faces else []
+            lead_person = named.get(lead)
+            frames = candidate_frames(analysis, still, lead=lead_person) if analysis.faces else []
         if len(frames) < 3 and shots:
             frames += fallback_frames(shots, still, 3 - len(frames))
         if not frames:
             frames = [(Image.open(backdrop).convert("RGB"), None, -1)]
         # The first thumbnail is paired with the first title, so it must not repeat it.
-        thumbnails = make_thumbnails(frames, title, lead, args.out, seed,
+        thumbnails = make_thumbnails(frames, title, lead, args.out, seed, lead_person=lead_person,
                                      lead_style="headline" if titles[0].lower().startswith(
                                          short_name(title).lower() + " music") else "dedication")
         width, height, _ = frame_size(args.draft)
