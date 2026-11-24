@@ -355,6 +355,12 @@ def _busyness(canvas, region):
     return float(np.abs(np.diff(patch, axis=1)).mean() + np.abs(np.diff(patch, axis=0)).mean())
 
 
+def _brightness(canvas, region):
+    left, top, right, bottom = (int(v) for v in region)
+    patch = np.asarray(canvas.convert("L").crop((left, top, right, bottom)), dtype=np.float32)
+    return float(patch.mean()) if patch.size else 0.0
+
+
 def text_region(canvas, face, block_w, block_h):
     """Top-left corner for a text block: clear of the face and hair, over the calmest area."""
     width, height = SIZE
@@ -372,7 +378,8 @@ def text_region(canvas, face, block_w, block_h):
         region = (x - 20, y - 20, x + block_w + 20, y + block_h + 20)
         if region[0] < 0 or region[2] > width or region[1] < 0 or region[3] > height:
             continue
-        cost = _busyness(canvas, region)
+        # White words need a darker background: bright sky or sand washes them out.
+        cost = _busyness(canvas, region) + max(0.0, _brightness(canvas, region) - 120) * 0.25
         if face is not None:
             fx, fy, fw, fh = face
             # Hats and hair reach well above and beside the detected face.
@@ -419,6 +426,9 @@ def _place(canvas, face, lines, glow=0.62):
         block = block.resize(size, Image.Resampling.LANCZOS)
     layer = Image.new("RGBA", SIZE)
     layer.paste(block, (int(x), int(y)), block)
+    # On a light background, deepen the glow so the words still stand out.
+    light = _brightness(canvas, (x, y, x + block.width, y + block.height))
+    glow = min(0.92, glow + max(0.0, light - 120) / 180)
     # A soft dark glow under the words, like light falloff rather than a box.
     alpha = layer.getchannel("A")
     halo = alpha.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(22))

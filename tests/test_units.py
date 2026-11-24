@@ -637,3 +637,14 @@ def test_tmdb_is_skipped_without_a_token(monkeypatch):
 
     monkeypatch.delenv("TMDB_READ_TOKEN", raising=False)
     assert tmdb.lookup("Dune (2021)") is None
+
+
+def test_text_prefers_the_darker_side_of_the_frame():
+    from PIL import Image, ImageDraw
+
+    from soundtrack.thumbnails import SIZE, text_region
+
+    canvas = Image.new("RGB", SIZE, (235, 235, 230))  # Bright sky on top...
+    ImageDraw.Draw(canvas).rectangle((0, 360, 1280, 720), fill=(40, 45, 50))  # ...dark ground below.
+    (_, y), _ = text_region(canvas, None, 500, 90)
+    assert y > 360
