@@ -534,3 +534,44 @@ def test_distinct_cues_drops_second_upload_of_same_track():
     ]
     kept = sources.distinct_cues([(str(i), (0, 60, n)) for i, n in enumerate(names)], title, "Klaus Badelt")
     assert [video_id for video_id, _ in kept] == ["0", "1", "3", "4", "5"]
+
+
+def test_title_options_follow_the_style_rules():
+    from soundtrack.titles import title_options
+
+    title = "Pirates of the Caribbean: The Curse of the Black Pearl (2003)"
+    popular = title_options(title, "Jack Sparrow", popular=True, seed=3)
+    assert len(popular) == len(set(popular)) == 10
+    assert popular[0] == "Pirates of the Caribbean music to work with Jack Sparrow"
+    assert sum(" | " in option for option in popular) == 5
+    assert all(len(option) <= 100 for option in popular)
+    niche = title_options(title, "Jack Sparrow", popular=False, seed=3)
+    assert niche.index("Pirates of the Caribbean music to work with Jack Sparrow") == 3
+    assert title_options("Dune (2021)", "", seed=1)[0] != title_options("Dune (2021)", "", seed=2)[0]
+
+
+def test_names_match_faces_through_video_titles():
+    from soundtrack.thumbnails import named_people
+
+    analysis = _analysis()
+    analysis.videos[0].credit = ("Ava Stone best scenes | Test Film", "")
+    analysis.videos[1].credit = ("Max Kade entrance scene", "")
+    assert named_people(analysis, ["Ava Stone", "Max Kade", "Nobody Here"]) == {"Ava Stone": 0, "Max Kade": 1}
+
+
+def test_thumbnails_keep_text_off_the_face(tmp_path):
+    from PIL import Image
+
+    from soundtrack.thumbnails import SIZE, crop_bars, make_thumbnails, text_region
+
+    frame = Image.new("RGB", (1280, 720), (90, 110, 130))
+    frame.paste((0, 0, 0), (0, 0, 1280, 90))
+    frame.paste((0, 0, 0), (0, 630, 1280, 720))
+    cropped, offset = crop_bars(frame)
+    assert cropped.size == (1280, 540) and offset == (0, 90)
+    face = (760, 140, 180, 200)  # Face on the right: text must not land on it.
+    x, y = text_region(Image.new("RGB", SIZE, (90, 110, 130)), face, 420, 90)
+    assert x + 420 < face[0] - face[2] * 0.7 or y > face[1] + face[3] * 1.3 or y + 90 < face[1] - face[3] * 1.2
+    paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path)
+    assert [path.name for path in paths] == ["thumbnail.jpg", "thumbnail-2.jpg", "thumbnail-3.jpg"]
+    assert all(Image.open(path).size == SIZE for path in paths)

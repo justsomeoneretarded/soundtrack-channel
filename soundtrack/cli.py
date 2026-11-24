@@ -6,14 +6,18 @@ import random
 import tempfile
 import time
 
+from PIL import Image
+
 from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudness, prepare, write_mix
 from .common import clean_composer, length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
 from .footage import analyse, gather, still, work_details
-from .reel import build_reel, frame_size, plan_reel, thumbnail_frame
+from .reel import build_reel, frame_size, plan_reel
 from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
-from .visuals import make_thumbnail, plain_backdrop, short_overlay, text_timeline
+from .thumbnails import candidate_frames, fallback_frames, make_thumbnails, named_people, short_name
+from .titles import POPULAR_SITELINKS, title_options
+from .visuals import plain_backdrop, short_overlay, text_timeline
 
 MAX_SECONDS = 3 * 3600
 
@@ -67,11 +71,11 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="soundtrack-") as temp:
         scratch = Path(temp)
         characters = [name.strip() for name in args.characters.split(",") if name.strip()]
-        others = []
+        others, popularity = [], 0
         youtube_audio = not args.audio and not args.audio_url
         youtube_clips = not args.clips and not args.audio
         if youtube_audio or youtube_clips:
-            found_characters, others = work_details(title)
+            found_characters, others, popularity = work_details(title)
             characters = characters or found_characters
         stage("Finding audio.")
         if args.audio:
@@ -109,10 +113,21 @@ def main(argv=None):
         stage("Building the film reel.")
         reel, _ = build_reel(shots, scratch / "reel", seconds, seed, args.draft)
         backdrop = plain_backdrop(scratch / "backdrop.png")
-        frame = thumbnail_frame(shots, still) if reel else None
         preview = length_label(seconds).endswith("Preview")
-        duration = "Preview" if preview else f"{round(seconds / 60)} minutes"
-        make_thumbnail(frame, title, f"Original score  ·  {duration}", args.out / "thumbnail.jpg")
+        # Name a character only when their face has been matched to their name.
+        named = named_people(analysis, characters) if analysis.recognised else {}
+        lead = next((name for name in characters if name in named), "")
+        titles = title_options(title, lead or (characters[0] if characters else ""),
+                               popularity >= POPULAR_SITELINKS, seed)
+        frames = candidate_frames(analysis, still, lead=named.get(lead)) if analysis.faces else []
+        if len(frames) < 3 and shots:
+            frames += fallback_frames(shots, still, 3 - len(frames))
+        if not frames:
+            frames = [(Image.open(backdrop).convert("RGB"), None, -1)]
+        # The first thumbnail is paired with the first title, so it must not repeat it.
+        thumbnails = make_thumbnails(frames, title, lead, args.out, seed,
+                                     lead_style="headline" if titles[0].lower().startswith(
+                                         short_name(title).lower() + " music") else "dedication")
         width, height, _ = frame_size(args.draft)
         text = text_timeline(title, args.composer, [(start, labels[source]) for start, source in timeline],
                              seconds, scratch / "text", (width, height))
@@ -141,5 +156,6 @@ def main(argv=None):
         write_outputs(args.out, title=title, seconds=seconds, style=args.style, composer=args.composer,
                       timeline=timeline, labels=labels, chapter_list=chapter_list, credits=credits,
                       visual_credits=visual_credits, loudness=loudness, scenes=shot_details, short=short,
-                      characters=characters, people=len(analysis.people))
+                      characters=characters, people=len(analysis.people), title_options=titles,
+                      thumbnails=[path.name for path in thumbnails], popularity=popularity)
     print(f"Finished in {time.monotonic() - began:.0f}s. Outputs are in {args.out}/.", flush=True)

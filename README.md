@@ -24,8 +24,9 @@ The artifact contains:
 | --- | --- |
 | `soundtrack.mp4` | 1280×720, 24 fps, H.264 video and stereo AAC audio at −14 LUFS, exact requested length, with embedded chapters |
 | `short.mp4` | 1080×1920 Shorts teaser (45 s) from the most intense stretch of the mix, showing the three best scenes |
-| `thumbnail.jpg` | 1280×720 still from the strongest shot, graded, with the title set in Inter |
-| `youtube-title.txt` | Search-friendly title with the work name, composer, soundtrack, and duration (≤100 characters) |
+| `thumbnail.jpg`, `thumbnail-2.jpg`, `thumbnail-3.jpg` | Three 1280×720 thumbnails for YouTube's thumbnail test: a sharp frame of a main character with two or three words of type |
+| `youtube-title.txt` | The first title option |
+| `youtube-title-options.txt` | Ten title options in a second-person, late-night-focus voice, plus a plain search title (all ≤100 characters) |
 | `youtube-description.txt` | Description with YouTube chapters or a tracklist, featured cues, source credits, links, and hashtags |
 | `youtube-tags.txt` | Comma-separated tags within YouTube's 500-character limit |
 | `manifest.json` | Machine-readable record of the arrangement, chapters, sources, loudness, characters, and chosen scenes |
@@ -49,6 +50,10 @@ Every shot is scored for picture quality (exposure and sharpness) plus how clear
 **Picture.** The whole video is film footage, with no artwork, portraits, waveform, or progress bar. The chosen shots play muted in a shuffled order, with neighbouring shots taken from different source videos. Shots are joined with 0.8-second cross-dissolves in groups of eight, and each group fades briefly through black into the next. Every shot gets the same gentle grade (a little more contrast, slightly lower saturation, and a vignette) and 2.39:1 cinema bars, so clips from different uploads look like one film. The groups repeat in a fresh order each pass until the mix is filled.
 
 Text is kept to a minimum and set in Inter. The title shows once, centred, for the first few seconds. When a new cue begins, its name fades in for seven seconds in the lower cinema bar, off the picture. The Short shows the same footage as a wide frame over a blurred copy of itself, with the title above and a single line below. If no footage can be downloaded, the video falls back to a plain dark background with the same text. The description includes separate visual credits when footage is used. Check that you also have permission to reuse the footage before uploading.
+
+**Thumbnails.** Three versions are made, so YouTube's thumbnail test can pick the winner. Each one is a full-bleed film still of a main character: faces are ranked by sharpness, lighting, size, how directly they face the camera, and source resolution, and crowded or cluttered frames are marked down. Letterbox bars are cropped off, and the frame is cropped so the face sits on a third. The words go in the calmest part of the picture, clear of the face and hair, with a soft shadow instead of a box. Text follows the packaging rules from [youtube-agent-skill](https://github.com/Jakeschincariol/youtube-agent-skill): three words at most (plus a small dedication line), and never a repeat of the title it is paired with. The three styles are a classical serif headline ("STAY FOCUSED", in Cinzel), a widely spaced single word ("F O C U S"), and a thin geometric dedication ("music to work with / JACK SPARROW", in Josefin Sans). A character is named only when their face is matched to their name: the person seen most in uploads whose titles name that character takes the name. Both fonts are open-licensed and downloaded from a pinned google/fonts commit with SHA-256 checks.
+
+**Titles.** Ten options are assembled from short second-person parts (a late hour, a deadline, building a startup or side project while others sleep), filled with the work's name and main character, so each film gets its own set. "<Work> music to work with <character>" leads the list when the work is popular (an article in at least 35 Wikipedia languages), and sits fourth otherwise. Exactly five options end with a tag such as "| FOCUS MUSIC", "| WORK MUSIC", or "| <Work> Soundtrack". A plain search title is listed last.
 
 **Chapters.** `mix` videos get one chapter per movement. `album` videos get a tracklist with one chapter per cue; cues shorter than ten seconds are merged so YouTube accepts the list. Chapters are written into the description and embedded in the MP4.
 
@@ -93,7 +98,9 @@ python render.py --help
 | `soundtrack/reel.py` | Shot selection and order, grading, dissolves, and the looping film reel |
 | `soundtrack/cookies.py` | Converts the `YOUTUBE_COOKIES` secret into a cookies file |
 | `soundtrack/audio.py` | Passage analysis, arrangement, and loudness |
-| `soundtrack/visuals.py` | Title, cue names, thumbnail, Short overlay, and text timelines |
+| `soundtrack/visuals.py` | Opening title, cue names, Short overlay, and text timelines |
+| `soundtrack/thumbnails.py` | Frame choice, name-to-face matching, layout, and type for the three thumbnails |
+| `soundtrack/titles.py` | Title options |
 | `soundtrack/video.py` | FFmpeg filter graphs for the main video and the Short |
 | `soundtrack/metadata.py` | Chapters, YouTube title, description, tags, and manifest |
 | `tests/` | Unit tests and an end-to-end render with synthetic audio (`python -m pip install pytest && python -m pytest`) |

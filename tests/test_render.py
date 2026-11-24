@@ -33,7 +33,8 @@ def test_full_render(tmp_path, style):
     out = tmp_path / "dist"
     main(["--title", "Test Film (2024)", "--style", style, "--audio", *map(str, audio),
           "--clips", str(clip), "--seconds", "100", "--short-seconds", "15", "--draft", "--out", str(out)])
-    for name in ("soundtrack.mp4", "short.mp4", "thumbnail.jpg", "youtube-title.txt",
+    for name in ("soundtrack.mp4", "short.mp4", "thumbnail.jpg", "thumbnail-2.jpg", "thumbnail-3.jpg",
+                 "youtube-title.txt", "youtube-title-options.txt",
                  "youtube-description.txt", "youtube-tags.txt", "manifest.json"):
         assert (out / name).stat().st_size > 0, name
     assert abs(media_duration(out / "soundtrack.mp4") - 100) <= 0.1
@@ -44,6 +45,7 @@ def test_full_render(tmp_path, style):
     assert channels == "2"
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["style"] == style
+    assert len(manifest["title_options"]) == 10
     assert {source["cue"] for source in manifest["audio_sources"]} == {"Cue 1", "Cue 2", "Cue 3"}
     assert manifest["loudness"] is not None
     assert manifest["reel_shots"], "shots should be chosen even from faceless footage"

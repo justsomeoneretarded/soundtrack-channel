@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .common import FONT_ROOT, HEIGHT, WIDTH, YEAR
 
@@ -190,61 +190,6 @@ def text_timeline(title, composer, cues, seconds, scratch, size=(WIDTH, HEIGHT))
         entries.append((end, blank))
     entries.sort(key=lambda entry: entry[0])
     return write_timeline(entries, seconds, scratch / "text.ffconcat")
-
-
-def grade_still(image):
-    image = ImageEnhance.Contrast(image).enhance(1.07)
-    return ImageEnhance.Color(image).enhance(0.88)
-
-
-def make_thumbnail(still, title, subtitle, path, size=(WIDTH, HEIGHT)):
-    """A film still, darkened toward the lower left, with the title set in clean type."""
-    width, height = size
-    if still is None:
-        base = Image.fromarray(_dark_gradient(width, height))
-    else:
-        base = grade_still(ImageOps.fit(still.convert("RGB"), size, Image.Resampling.LANCZOS))
-    y, x = np.mgrid[0:height, 0:width]
-    shade = np.clip(1.15 - x / (width * 0.9), 0, 1) ** 1.4 * 0.72 + np.clip(y / height - 0.45, 0, 1) * 0.6
-    pixels = np.asarray(base, dtype=np.float32) * (1 - np.clip(shade, 0, 0.86))[..., None]
-    image = Image.fromarray(np.uint8(np.clip(pixels, 0, 255))).convert("RGBA")
-    layer = Image.new("RGBA", size)
-    draw = ImageDraw.Draw(layer)
-    main, sub = split_title(title)
-    margin = round(width * 0.055)
-    main_face = None
-    for size_px in range(round(height * 0.12), round(height * 0.05), -2):
-        face = typeface("Bold", size_px)
-        words, lines = main.split(), [""]
-        for word in words:
-            trial = (lines[-1] + " " + word).strip()
-            if lines[-1] and tracked_width(trial, face, 0.02) > width * 0.6:
-                lines.append(word)
-            else:
-                lines[-1] = trial
-        if len(lines) <= 3 and max(tracked_width(line, face, 0.02) for line in lines) <= width * 0.62:
-            main_face, main_lines = face, lines
-            break
-    if main_face is None:
-        main_face, main_lines = typeface("Bold", round(height * 0.05)), [main]
-    sub_face = fit_tracked(sub, "Medium", width * 0.6, round(height * 0.04), round(height * 0.022), 0.08)
-    small_face = typeface("Medium", round(height * 0.026))
-    block = len(main_lines) * main_face.size * 1.02 + (sub_face.size * 1.6 if sub else 0) + small_face.size * 2.6
-    top = height - margin - block
-    draw.line((margin, top - main_face.size * 0.35, margin + width * 0.05, top - main_face.size * 0.35),
-              fill=(*INK, 230), width=max(2, round(height * 0.004)))
-    for line in main_lines:
-        draw_tracked(draw, (margin, top), line, main_face, (*INK, 255), 0.02)
-        top += main_face.size * 1.02
-    if sub:
-        top += sub_face.size * 0.6
-        draw_tracked(draw, (margin, top), sub, sub_face, (*INK, 235), 0.08)
-        top += sub_face.size * 1.25
-    top += small_face.size * 0.9
-    draw_tracked(draw, (margin, top), subtitle.upper(), small_face, (*INK, 190), 0.3)
-    image = Image.alpha_composite(image, _with_shadow(layer, round(height * 0.012)))
-    image.convert("RGB").save(path, quality=93)
-    return path
 
 
 def _dark_gradient(width, height):

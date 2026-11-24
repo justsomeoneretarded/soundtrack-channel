@@ -75,30 +75,6 @@ def best_shot(shots):
     return max(with_people or shots, key=lambda shot: shot.score)
 
 
-def thumbnail_frame(shots, grab, candidates=10):
-    """The sharpest frame among the strongest character shots, as a PIL image (or None).
-
-    grab(path, seconds) returns a PIL image. Face scores alone can favour a soft, upscaled
-    copy, which looks poor at thumbnail size.
-    """
-    import cv2
-
-    with_people = [shot for shot in shots if shot.person >= 0] or list(shots)
-    best, best_value = None, -1.0
-    for shot in sorted(with_people, key=lambda shot: -shot.score)[:candidates]:
-        for fraction in (0.35, 0.65):
-            image = grab(shot.path, shot.start + shot.length * fraction)
-            if image is None:
-                continue
-            gray = cv2.cvtColor(np.asarray(image.convert("RGB").resize((640, 360))), cv2.COLOR_RGB2GRAY)
-            sharpness = min(1.0, cv2.Laplacian(gray, cv2.CV_64F).var() / 400)
-            exposure = 1.0 if 45 < gray.mean() < 200 else 0.5
-            value = shot.score * (0.3 + 0.7 * sharpness) * exposure
-            if value > best_value:
-                best, best_value = image, value
-    return best
-
-
 def frame_size(draft):
     return (640, 360, 12) if draft else (WIDTH, HEIGHT, 24)
 
