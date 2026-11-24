@@ -135,8 +135,8 @@ def main(argv=None):
             lead = next((name for name in characters if name in named), "")
             lead_person = named.get(lead)
             frames = candidate_frames(analysis, still, lead=lead_person) if analysis.faces else []
-        if len(frames) < 3 and shots:
-            frames += fallback_frames(shots, still, 3 - len(frames))
+        if len(frames) < 6 and shots:
+            frames += fallback_frames(shots, still, 6 - len(frames))
         if not frames:
             frames = [(Image.open(backdrop).convert("RGB"), None, -1)]
         # The first thumbnail is paired with the first title, so it must not repeat it.

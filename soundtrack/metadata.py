@@ -147,7 +147,7 @@ def write_outputs(out, *, title, seconds, style, composer, timeline, labels, cha
     description = describe(title, seconds, style, composer, chapter_list, cues, credits, visual_credits)
     keywords = tags(title, composer, labels, seconds)
     (out / "youtube-title.txt").write_text(heading + "\n", encoding="utf-8")
-    options = list(title_options) + [search_title]
+    options = list(title_options) or [search_title]
     (out / "youtube-title-options.txt").write_text(
         "\n".join(f"{index}. {option}" for index, option in enumerate(options, 1)) + "\n", encoding="utf-8")
     (out / "youtube-description.txt").write_text(description, encoding="utf-8")

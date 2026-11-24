@@ -56,8 +56,8 @@ def _sentence(text):
     return text[:1].upper() + text[1:]
 
 
-def title_options(title, character="", popular=False, seed=0, count=10):
-    """`count` distinct titles. Half end with a '| … MUSIC' or '| … Soundtrack' tag.
+def title_options(title, character="", popular=False, seed=0, count=5):
+    """`count` distinct titles. Half (rounded up) end with a '| … MUSIC' or '| … Soundtrack' tag.
 
     "<work> music to work with <character>" leads the list when the work is popular, and
     sits further down otherwise.
@@ -83,8 +83,8 @@ def title_options(title, character="", popular=False, seed=0, count=10):
         picked = [signature] + picked[:count - 1] if popular else picked[:3] + [signature] + picked[3:count - 1]
     picked = picked[:count]
 
-    # Tag exactly half of the titles, never the signature line (it already names the work).
-    want = count // 2
+    # Tag half of the titles (rounded up), never the signature line (it already names the work).
+    want = (count + 1) // 2
     order = [index for index in range(len(picked)) if picked[index] != signature]
     rng.shuffle(order)
     suffixes = list(SUFFIXES)

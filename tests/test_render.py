@@ -45,7 +45,8 @@ def test_full_render(tmp_path, style):
     assert channels == "2"
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["style"] == style
-    assert len(manifest["title_options"]) == 10
+    assert len(manifest["title_options"]) == 5
+    assert len(manifest["thumbnails"]) == 10
     assert {source["cue"] for source in manifest["audio_sources"]} == {"Cue 1", "Cue 2", "Cue 3"}
     assert manifest["loudness"] is not None
     assert manifest["reel_shots"], "shots should be chosen even from faceless footage"

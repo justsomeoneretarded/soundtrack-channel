@@ -541,9 +541,9 @@ def test_title_options_follow_the_style_rules():
 
     title = "Pirates of the Caribbean: The Curse of the Black Pearl (2003)"
     popular = title_options(title, "Jack Sparrow", popular=True, seed=3)
-    assert len(popular) == len(set(popular)) == 10
+    assert len(popular) == len(set(popular)) == 5
     assert popular[0] == "Pirates of the Caribbean music to work with Jack Sparrow"
-    assert sum(" | " in option for option in popular) == 5
+    assert sum(" | " in option for option in popular) == 3
     assert all(len(option) <= 100 for option in popular)
     niche = title_options(title, "Jack Sparrow", popular=False, seed=3)
     assert niche.index("Pirates of the Caribbean music to work with Jack Sparrow") == 3
@@ -570,11 +570,12 @@ def test_thumbnails_keep_text_off_the_face(tmp_path):
     cropped, offset = crop_bars(frame)
     assert cropped.size == (1280, 540) and offset == (0, 90)
     face = (760, 140, 180, 200)  # Face on the right: text must not land on it.
-    x, y = text_region(Image.new("RGB", SIZE, (90, 110, 130)), face, 420, 90)
+    (x, y), cost = text_region(Image.new("RGB", SIZE, (90, 110, 130)), face, 420, 90)
+    assert cost < 1000
     assert x + 420 < face[0] - face[2] * 0.7 or y > face[1] + face[3] * 1.3 or y + 90 < face[1] - face[3] * 1.2
     paths = make_thumbnails([(cropped, (900, 60, 150, 170), 0)], "Test Film (2024)", "Ava Stone", tmp_path,
                             lead_person=0)
-    assert [path.name for path in paths] == ["thumbnail.jpg", "thumbnail-2.jpg", "thumbnail-3.jpg"]
+    assert [path.name for path in paths] == ["thumbnail.jpg"] + [f"thumbnail-{n}.jpg" for n in range(2, 11)]
     assert all(Image.open(path).size == SIZE for path in paths)
 
 
@@ -590,11 +591,21 @@ def test_the_name_goes_only_on_the_lead_characters_frame(tmp_path, monkeypatch):
     lead = (Image.new("RGB", (1280, 720), (30, 200, 30)), None, 0)
     thumbnails.make_thumbnails([other, lead], "Test Film (2024)", "Ava Stone", tmp_path, lead_style="headline",
                                lead_person=0)
-    (pixel, character), = named_on
-    assert character == "Ava Stone" and pixel[1] > pixel[0]  # The green (lead) frame carries the name.
-    named_on.clear()
-    thumbnails.make_thumbnails([other], "Test Film (2024)", "Ava Stone", tmp_path, lead_person=0)
-    assert named_on[0][1] == ""  # No frame of the lead: no name.
+    assert len(named_on) == 1  # One frame of the lead: one named version, not three copies.
+    assert all(character == "Ava Stone" and pixel[1] > pixel[0] for pixel, character in named_on)
+    named_on.clear()  # Only the green (lead) frame carries the name, at most three times.
+    paths = thumbnails.make_thumbnails([other], "Test Film (2024)", "Ava Stone", tmp_path, lead_person=0)
+    assert not named_on and len(paths) == 10  # No frame of the lead: no one is named.
+
+
+def test_ten_thumbnail_plans_vary_style_and_words():
+    from soundtrack.thumbnails import plan_styles
+
+    plan = plan_styles(10, "headline", 0, True)
+    worded = [item for item in plan if item[0] != "dedication"]
+    assert len(plan) == 10 and len(worded) == len(set(worded)) and plan[0][0] == "headline"
+    assert sum(style == "dedication" for style, _ in plan) == 3
+    assert not any(style == "dedication" for style, _ in plan_styles(10, "dedication", 0, False))
 
 
 def test_tmdb_summary_prefers_text_free_stills_and_billing_order():

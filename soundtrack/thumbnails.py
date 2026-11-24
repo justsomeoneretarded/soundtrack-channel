@@ -132,7 +132,7 @@ def named_people(analysis, characters):
     return names
 
 
-def candidate_frames(analysis, grab, count=3, examine=18, lead=None):
+def candidate_frames(analysis, grab, count=10, examine=30, lead=None):
     """Up to `count` (image, face_box, person) from different moments, best first.
 
     Faces of the main characters are ranked by detector quality, how directly they face
@@ -195,7 +195,7 @@ def candidate_frames(analysis, grab, count=3, examine=18, lead=None):
     people_used = {}
     for score, frame, face in examined:
         # Prefer a mix of people and moments across the versions.
-        if people_used.get(frame[2], 0) >= 2:
+        if people_used.get(frame[2], 0) >= max(2, count // 2):
             continue
         chosen.append(frame)
         people_used[frame[2]] = people_used.get(frame[2], 0) + 1
@@ -210,7 +210,7 @@ def candidate_frames(analysis, grab, count=3, examine=18, lead=None):
     return chosen
 
 
-def fallback_frames(shots, grab, count=3):
+def fallback_frames(shots, grab, count=10):
     """Faceless footage: the sharpest well-exposed frames from the strongest shots."""
     frames = []
     for shot in sorted(shots, key=lambda shot: -shot.score)[:count * 3]:
@@ -263,7 +263,7 @@ def _calm(image):
     return 1.0 / (1.0 + max(0.0, busy - 10) / 8), small
 
 
-def tmdb_frames(info, cache, count=3, models=None):
+def tmdb_frames(info, cache, count=10, models=None):
     """Rank official TMDB stills for thumbnails. Returns (frames, lead_seen).
 
     frames: [(image, face_box or None, person)] where person is 0 for the lead actor
@@ -281,7 +281,7 @@ def tmdb_frames(info, cache, count=3, models=None):
         if faces:
             lead_embedding = max(faces, key=lambda face: face[0][2] * face[0][3])[2]
     scored = []
-    for path in info.get("backdrops", [])[:12]:
+    for path in info.get("backdrops", [])[:16]:
         image = fetch(path, cache)
         if image is None:
             continue
@@ -384,7 +384,7 @@ def text_region(canvas, face, block_w, block_h):
         cost += 4 if name in {"left", "right"} else 0  # Centred lines read best at small sizes.
         if best_cost is None or cost < best_cost:
             best, best_cost = (x, y), cost
-    return best
+    return best, best_cost
 
 
 def _lettering(lines, width, height):
@@ -408,8 +408,15 @@ def _block_size(lines):
 
 def _place(canvas, face, lines, glow=0.62):
     block_w, block_h = _block_size(lines)
-    x, y = text_region(canvas, face, block_w, block_h)
     block = _lettering(lines, block_w, block_h)
+    # Shrink the words step by step until they fit somewhere clear of the face.
+    for scale in (1.0, 0.85, 0.72, 0.6):
+        size = (max(1, round(block_w * scale)), max(1, round(block_h * scale)))
+        (x, y), cost = text_region(canvas, face, *size)
+        if cost < 1000:
+            break
+    if size != block.size:
+        block = block.resize(size, Image.Resampling.LANCZOS)
     layer = Image.new("RGBA", SIZE)
     layer.paste(block, (int(x), int(y)), block)
     # A soft dark glow under the words, like light falloff rather than a box.
@@ -461,46 +468,77 @@ def style_dedication(canvas, face, name, character):
                                  (character.upper(), name_font, 0.06, round(name_font.size * 0.22))])
 
 
-HEADLINES = ["Stay Focused", "Deep Work", "Locked In", "Keep Building"]
-SINGLES = ["Focus"]
+HEADLINES = ["Stay Focused", "Deep Work", "Locked In", "Keep Building", "Stay Hungry", "No Days Off"]
+GEOMETRIC = ["Working Music", "Focus Music", "Late Night Work"]
+SINGLES = ["Focus", "Work", "Study"]
+COUNT = 10
 
 
-def make_thumbnails(frames, title, character, out, seed=0, lead_style="dedication", lead_person=None):
-    """Write thumbnail.jpg, thumbnail-2.jpg and thumbnail-3.jpg; return their paths.
+def style_geometric(canvas, face, words):
+    """'WORKING MUSIC' in thin geometric caps."""
+    text = words.upper()
+    return _place(canvas, face, [(text, _fit("geometric", text, SIZE[0] * 0.78, 96, 44, 0.06), 0.06, 0)])
+
+
+def plan_styles(count, lead_style, seed, has_lead, lead_frames=3):
+    """[(style, words)] for `count` thumbnails: varied styles and phrases, never the same twice.
+
+    The dedication (which names the lead) appears up to three times when a lead frame exists.
+    """
+    cycle = ["headline", "dedication", "spaced", "geometric"] if has_lead else ["headline", "geometric", "spaced"]
+    words = {"headline": HEADLINES, "geometric": GEOMETRIC, "spaced": SINGLES, "dedication": [""]}
+    used = {key: 0 for key in words}
+    first = lead_style if lead_style in cycle else cycle[0]
+    order = [first] + [style for style in cycle if style != first]
+    plan = []
+    while len(plan) < count:
+        for style in order:
+            if len(plan) == count:
+                break
+            if style == "dedication" and used[style] >= min(3, lead_frames):
+                continue
+            options = words[style]
+            plan.append((style, options[(seed + used[style]) % len(options)]))
+            used[style] += 1
+    return plan
+
+
+def make_thumbnails(frames, title, character, out, seed=0, lead_style="dedication", lead_person=None, count=COUNT):
+    """Write thumbnail.jpg and thumbnail-2.jpg … thumbnail-<count>.jpg; return their paths.
 
     frames: [(image, face_box or None, person)], best first. Words stay at three or fewer
     (plus a small dedication line), and lead_style picks the first version so it does not
     repeat the first title: "headline" when that title already names the work's music.
-    The character is named only on a frame of `lead_person`; without one, the dedication
-    version names no one.
+    The character is named only on frames of `lead_person`; without one, no one is named.
     """
     name = short_name(title)
     frames = list(frames)
     if not frames:
         return []
-    lead_index = next((index for index, frame in enumerate(frames)
-                       if lead_person is not None and frame[2] == lead_person), None)
-    dedication_name = character if lead_index is not None else ""
-    order = ["dedication", "headline", "spaced"] if lead_style == "dedication" else ["headline", "dedication", "spaced"]
-    # Give the dedication version the lead's frame, and the others the remaining frames in order.
-    remaining = [index for index in range(len(frames)) if index != lead_index]
-    assigned = {}
-    for style in order:
-        if style == "dedication" and lead_index is not None:
-            assigned[style] = lead_index
-        else:
-            assigned[style] = remaining.pop(0) if remaining else (lead_index if lead_index is not None else 0)
+    lead_frames = [index for index, frame in enumerate(frames)
+                   if lead_person is not None and frame[2] == lead_person]
+    plan = plan_styles(count, lead_style, seed, bool(lead_frames and character), len(lead_frames))
+    other_frames = [index for index in range(len(frames)) if index not in lead_frames] or list(range(len(frames)))
+    lead_queue, other_queue = list(lead_frames), list(other_frames)
     renderers = {
-        "dedication": lambda canvas, face: style_dedication(canvas, face, name, dedication_name),
-        "headline": lambda canvas, face: style_headline(canvas, face, HEADLINES[seed % len(HEADLINES)]),
-        "spaced": lambda canvas, face: style_spaced(canvas, face, SINGLES[seed % len(SINGLES)]),
+        "dedication": lambda canvas, face, _: style_dedication(canvas, face, name, character),
+        "headline": style_headline,
+        "spaced": style_spaced,
+        "geometric": style_geometric,
     }
-    paths = []
-    sides = ["right", "left", "right"]
-    for index, style in enumerate(order):
-        image, face, _ = frames[assigned[style] % len(frames)]
-        canvas, box = frame_to_canvas(image, face, sides[index])
-        result = renderers[style](grade(canvas), box)
+    paths, uses = [], {}
+    for index, (style, words) in enumerate(plan):
+        if style == "dedication":
+            frame_index = lead_queue.pop(0) if lead_queue else lead_frames[index % len(lead_frames)]
+        else:
+            if not other_queue:
+                other_queue = list(other_frames)  # Reuse frames, framed from the other side.
+            frame_index = other_queue.pop(0)
+        uses[frame_index] = uses.get(frame_index, 0) + 1
+        image, face, _ = frames[frame_index]
+        side = ("right", "left")[(index + uses[frame_index]) % 2]
+        canvas, box = frame_to_canvas(image, face, side)
+        result = renderers[style](grade(canvas), box, words)
         path = out / ("thumbnail.jpg" if index == 0 else f"thumbnail-{index + 1}.jpg")
         result.save(path, quality=94)
         paths.append(path)
