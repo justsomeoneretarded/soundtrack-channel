@@ -104,8 +104,8 @@ def test_loudness_gain_caps_limiting():
 from pathlib import Path  # noqa: E402
 
 from soundtrack.footage import (Analysis, Face, Video, character_ids, choose, cluster,  # noqa: E402
-                                candidate_windows, default_count, pick_work, plan_scenes)
-from soundtrack.visuals import portrait_timeline, write_timeline  # noqa: E402
+                                candidate_windows, pick_work)
+from soundtrack.visuals import write_timeline  # noqa: E402
 
 
 def _claim(value):
@@ -168,21 +168,32 @@ def test_scene_windows_follow_cuts_and_favour_characters():
     assert {w.person for w in picks} == {0, 1}  # Variety across characters.
 
 
-def test_plan_scenes_puts_best_scene_near_climax():
-    scenes, details = plan_scenes(_analysis(), 3600, 2)
-    assert len(scenes) == 2
-    best = max(details, key=lambda d: d["score"])
-    assert best["character"] == 0 and best["start"] > 3600 * 0.6
-    assert default_count(3600) == 9 and default_count(30) == 2 and default_count(5) == 0
+def test_reel_alternates_videos_and_fills_the_video(tmp_path, monkeypatch):
+    from soundtrack import reel
+
+    shots = reel.plan_reel(_analysis(), seed=1)
+    assert len(shots) >= 4
+    counts = [sum(shot.video == video for shot in shots) for video in (0, 1)]
+    repeats = sum(a.video == b.video for a, b in zip(shots, shots[1:]))
+    assert repeats <= abs(counts[0] - counts[1])  # Neighbours come from different videos.
+    assert reel.best_shot(shots).person == 0
+    monkeypatch.setattr(reel, "_chunk", lambda group, output, draft, mask: (output.touch(), 40.0)[1])
+    listing, unique = reel.build_reel(shots * 3, tmp_path, 600, seed=1)
+    files = [line for line in listing.read_text().splitlines() if line.startswith("file")]
+    assert unique == 40.0 * len(set(files)) and len(files) * 40 >= 605
+    assert all(a != b for a, b in zip(files, files[1:]))  # No chunk plays twice in a row.
 
 
-def test_portrait_timeline_swaps_inside_scenes(tmp_path):
-    layers = {0: tmp_path / "a.png", 1: tmp_path / "b.png"}
-    scenes = [("v.mp4", 0, 8, 100.0), ("v.mp4", 0, 8, 200.0), ("v.mp4", 0, 8, 300.0)]
-    listing = portrait_timeline(layers, scenes, [1, 1, -1], 400, tmp_path / "p.ffconcat")
+def test_text_timeline_fades_title_and_cues(tmp_path):
+    from soundtrack.visuals import split_title, text_timeline
+
+    assert split_title("Pirates of the Caribbean: The Curse of the Black Pearl (2003)") == (
+        "PIRATES OF THE CARIBBEAN", "THE CURSE OF THE BLACK PEARL")
+    assert split_title("Dune (2021)") == ("DUNE", "")
+    listing = text_timeline("Dune (2021)", "Hans Zimmer", [(0.0, "Paul's Dream"), (60.0, "Ripples")],
+                            300, tmp_path, (320, 180))
     text = listing.read_text()
-    assert text.count("a.png") == 3 and text.count("b.png") == 1  # a, b at 104, a at 304 (+ final)
-    assert "duration 104.000" in text
+    assert text.count("text-") == 3 * 12  # Title and two cues, six steps in and six out.
     assert write_timeline([], 10, tmp_path / "x") is None
 
 
@@ -251,7 +262,7 @@ def test_download_paths_run_with_mocked_ytdlp(monkeypatch, tmp_path):
 
     monkeypatch.setattr(footage, "matching_uploads", lambda *args, **kwargs: candidates)
     files, _ = footage.gather("Dune", tmp_path / "v", ["Paul Atreides"])
-    assert len(files) == 2 and calls[-1][1] == 300
+    assert len(files) == 2 and calls[-1][1] == 420 and "700M" in calls[-1][0]
 
     monkeypatch.setattr(sources, "matching_uploads", lambda *args, **kwargs: candidates)
     monkeypatch.setattr(sources, "audible_span", lambda path: 120.0)
@@ -300,16 +311,14 @@ def test_render_graph_has_no_memory_floods(monkeypatch, tmp_path):
         raise SystemExit  # Stop before encoding.
 
     monkeypatch.setattr(video.subprocess, "run", fake_run)
-    with pytest.raises(SystemExit):
-        video.render_video(tmp_path / "mix.pcm", tmp_path / "b.png", tmp_path / "e.png",
-                           tmp_path / "characters.ffconcat", [("clip.mp4", 1.0, 6.0, 100.0)],
-                           tmp_path / "out.mp4", 3600, False, "anull", tmp_path / "cards.ffconcat",
-                           None, tmp_path / "shade.png")
-    command = captured["command"]
-    graph = command[command.index("-filter_complex") + 1]
-    assert "-loop" not in command
-    for label in ("[3:v]", "[4:v]"):  # The portrait and card timelines.
-        chain = graph.split(label, 1)[1].split(";", 1)[0]
+    for reel in (tmp_path / "reel.ffconcat", None):
+        with pytest.raises(SystemExit):
+            video.render_video(tmp_path / "mix.pcm", reel, tmp_path / "b.png", tmp_path / "text.ffconcat",
+                               tmp_path / "out.mp4", 3600, False, "anull", None)
+        command = captured["command"]
+        graph = command[command.index("-filter_complex") + 1]
+        assert "-loop" not in command
+        chain = graph.split("[2:v]", 1)[1].split(";", 1)[0]  # The text timeline.
         assert "fps=" not in chain
 
 

@@ -24,7 +24,7 @@ The artifact contains:
 | --- | --- |
 | `soundtrack.mp4` | 1280×720, 24 fps, H.264 video and stereo AAC audio at −14 LUFS, exact requested length, with embedded chapters |
 | `short.mp4` | 1080×1920 Shorts teaser (45 s) from the most intense stretch of the mix, showing the three best scenes |
-| `thumbnail.jpg` | 1280×720 eclipse art with a length badge and the lead character's portrait when footage is available |
+| `thumbnail.jpg` | 1280×720 still from the strongest shot, graded, with the title set in Inter |
 | `youtube-title.txt` | Search-friendly title with the work name, composer, soundtrack, and duration (≤100 characters) |
 | `youtube-description.txt` | Description with YouTube chapters or a tracklist, featured cues, source credits, links, and hashtags |
 | `youtube-tags.txt` | Comma-separated tags within YouTube's 500-character limit |
@@ -42,11 +42,13 @@ The workflow searches YouTube for the title plus “official soundtrack” and �
 
 **Loudness.** The finished mix is measured (EBU R128) and brought to YouTube's −14 LUFS reference with a single constant gain. A transparent safety limiter is added only when peaks would exceed −2 dBFS, and it is never asked for more than 3 dB of reduction, so the score keeps its dynamics.
 
-**Best scenes and characters.** The workflow looks up the work's characters on Wikidata and searches YouTube for official trailers, official clips, scenes featuring each of the first four characters, and best-scene uploads. Interviews, featurettes, reactions, reviews, fan edits, and similar uploads are filtered out. Up to six videos are downloaded at 720p. Each one is decoded once: shot cuts are detected, and two frames a second are checked for exposure, sharpness, and faces. Faces are found with OpenCV's YuNet detector and grouped by identity with the SFace recogniser. Both models are downloaded once from the OpenCV model zoo, pinned to a commit, verified by SHA-256, and cached between runs. The people who appear most often, largest, and across the most videos rank as the main characters.
+**Best scenes and characters.** The workflow looks up the work's characters on Wikidata and searches YouTube for scene packs, best-scene uploads, scenes featuring each of the first four characters, and official clips, longest first. Trailers, which cut fast and carry title cards and logos, are used only when fewer than three other videos are found. Interviews, featurettes, reactions, reviews, fan edits, and similar uploads are filtered out. Up to ten videos are downloaded at 720p, and shots from sources below 720p are marked down. Each one is decoded once: shot cuts are detected, and two frames a second are checked for exposure, sharpness, and faces. Faces are found with OpenCV's YuNet detector and grouped by identity with the SFace recogniser. Both models are downloaded once from the OpenCV model zoo, pinned to a commit, verified by SHA-256, and cached between runs. The people who appear most often, largest, and across the most videos rank as the main characters.
 
-Every shot is scored by how clearly it shows a main character (face size, sharpness, lighting, and how directly they face the camera, weighted toward the lead), and 5–10-second scenes are built that start and end on shot cuts. Logos, title cards, and end credits are skipped, and rapid montages are marked down. About one scene every seven minutes is chosen, varied across characters and source videos, and the strongest one is placed at the mix's climax.
+Every shot is scored for picture quality (exposure and sharpness) plus how clearly it shows a main character (face size, sharpness, lighting, and how directly they face the camera, weighted toward the lead). Shots of 4½–8 seconds are cut on the source's own shot changes. Logos, title cards, and end credits are skipped, rapid montages are marked down, and weak shots are left out.
 
-**Picture.** The eclipse drifts behind a portrait of the lead character while a mint-green waveform responds to the final mix. A “Now playing” card names the current cue, and a progress bar tracks the whole video. Scenes play full-frame and muted with soft dissolves, while the score, waveform, and progress bar continue on top. Halfway through each scene, hidden behind it, the portrait changes to the character that scene featured, so the video cycles through the cast. The Short shows the three strongest scenes in its picture panel. If no footage can be downloaded, the animated eclipse and waveform still render. The description includes separate visual credits when footage is used. Check that you also have permission to reuse the footage before uploading.
+**Picture.** The whole video is film footage, with no artwork, portraits, waveform, or progress bar. The chosen shots play muted in a shuffled order, with neighbouring shots taken from different source videos. Shots are joined with 0.8-second cross-dissolves in groups of eight, and each group fades briefly through black into the next. Every shot gets the same gentle grade (a little more contrast, slightly lower saturation, and a vignette) and 2.39:1 cinema bars, so clips from different uploads look like one film. The groups repeat in a fresh order each pass until the mix is filled.
+
+Text is kept to a minimum and set in Inter. The title shows once, centred, for the first few seconds. When a new cue begins, its name fades in for seven seconds in the lower cinema bar, off the picture. The Short shows the same footage as a wide frame over a blurred copy of itself, with the title above and a single line below. If no footage can be downloaded, the video falls back to a plain dark background with the same text. The description includes separate visual credits when footage is used. Check that you also have permission to reuse the footage before uploading.
 
 **Chapters.** `mix` videos get one chapter per movement. `album` videos get a tracklist with one chapter per cue; cues shorter than ten seconds are merged so YouTube accepts the list. Chapters are written into the description and embedded in the MP4.
 
@@ -79,7 +81,7 @@ SOUNDTRACK_COOKIES=cookies.txt python render.py --title 'Example Movie (2024)'
 python render.py --help
 ```
 
-`--draft` renders at 640×360 and 12 fps for quick checks. `--cutaways N` changes the number of scenes (0 disables them), `--short-seconds 0` skips the Shorts teaser, and `--no-loudnorm` keeps the arranged level.
+`--draft` renders at 640×360 and 12 fps for quick checks. `--short-seconds 0` skips the Shorts teaser, and `--no-loudnorm` keeps the arranged level.
 
 ## Project layout
 
@@ -87,10 +89,11 @@ python render.py --help
 | --- | --- |
 | `render.py` | Entry point used by the workflow |
 | `soundtrack/sources.py` | YouTube search, audio downloads, links, and cue naming |
-| `soundtrack/footage.py` | Character lookup, footage download, face analysis, and scene selection |
+| `soundtrack/footage.py` | Character lookup, footage download, face analysis, and shot scoring |
+| `soundtrack/reel.py` | Shot selection and order, grading, dissolves, and the looping film reel |
 | `soundtrack/cookies.py` | Converts the `YOUTUBE_COOKIES` secret into a cookies file |
 | `soundtrack/audio.py` | Passage analysis, arrangement, and loudness |
-| `soundtrack/visuals.py` | Artwork, portrait layers, overlay cards, and timelines |
+| `soundtrack/visuals.py` | Title, cue names, thumbnail, Short overlay, and text timelines |
 | `soundtrack/video.py` | FFmpeg filter graphs for the main video and the Short |
 | `soundtrack/metadata.py` | Chapters, YouTube title, description, tags, and manifest |
 | `tests/` | Unit tests and an end-to-end render with synthetic audio (`python -m pip install pytest && python -m pytest`) |

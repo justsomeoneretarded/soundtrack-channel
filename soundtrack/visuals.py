@@ -1,161 +1,135 @@
-"""Artwork, portraits, scene selection, and on-screen overlay cards."""
-from colorsys import hsv_to_rgb
-import math
+"""Typography and stills: the opening title, cue names, thumbnail, and Shorts overlay.
+
+Text is kept small, letter-spaced, and off the picture where possible: cue names sit in the
+lower cinema bar, and the title shows once at the start.
+"""
+import os
 from pathlib import Path
-import random
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from .common import HEIGHT, WIDTH, font
+from .common import FONT_ROOT, HEIGHT, WIDTH, YEAR
 
-CARD_SIZE = (640, 96)
-CARD_POS = (64, 462)
-BAR_POS, BAR_SIZE = (64, 566), (560, 4)
-
-
-def create_eclipse(accent):
-    eclipse = Image.new("RGBA", (410, 410))
-    draw = ImageDraw.Draw(eclipse)
-    for radius, alpha in [(201, 35), (177, 64), (156, 110), (145, 230)]:
-        bounds = (205 - radius, 205 - radius, 205 + radius, 205 + radius)
-        if radius == 145:
-            draw.ellipse(bounds, fill=(8, 12, 37, 194))
-        draw.ellipse(bounds, outline=(*accent, alpha), width=2)
-    draw.ellipse((61, 168, 68, 175), fill=(*accent, 246))
-    draw.ellipse((357, 250, 364, 257), fill=(234, 247, 255, 224))
-    return eclipse
+INK = (238, 234, 226)
+INTER_DIRS = [Path(os.environ.get("SOUNDTRACK_INTER_DIR", "/usr/share/fonts/opentype/inter"))]
+FADE_STEPS = 6
+FADE_STEP_SECONDS = 0.1
+TITLE_SECONDS = (1.0, 8.0)   # When the opening title shows.
+CUE_SECONDS = 7.0            # How long a cue name stays up.
 
 
-def character_layer(portrait, accent):
-    if portrait is None:
-        return Image.new("RGBA", (420, 462))
-    mask = Image.new("L", portrait.size)
-    ImageDraw.Draw(mask).rounded_rectangle((7, 7, 412, 454), radius=96, fill=255)
-    feather = np.asarray(mask.filter(ImageFilter.GaussianBlur(9)), dtype=np.float32)
-    vertical = np.linspace(1, 0, 122)
-    feather[-122:] *= vertical[:, None]
-    portrait = portrait.convert("RGBA")
-    portrait.putalpha(Image.fromarray(feather.astype(np.uint8)))
-    edge = Image.new("RGBA", portrait.size)
-    ImageDraw.Draw(edge).rounded_rectangle((9, 9, 410, 452), radius=94,
-                                           outline=(*accent, 110), width=2)
-    edge_alpha = np.array(edge.getchannel("A"))
-    edge_alpha[-122:] = (edge_alpha[-122:] * vertical[:, None]).astype(np.uint8)
-    edge.putalpha(Image.fromarray(edge_alpha))
-    return Image.alpha_composite(portrait, edge)
+def typeface(weight, size):
+    """Inter at the given weight, falling back to DejaVu Sans when Inter is not installed."""
+    for folder in INTER_DIRS:
+        path = folder / f"Inter-{weight}.otf"
+        if path.is_file():
+            return ImageFont.truetype(str(path), size)
+    bold = weight in {"SemiBold", "Bold", "ExtraBold", "Black"}
+    return ImageFont.truetype(str(FONT_ROOT / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")), size)
 
 
-def wrap(text, typeface, width, max_lines):
-    lines = [""]
-    for word in text.split():
-        trial = (lines[-1] + " " + word).strip()
-        if lines[-1] and typeface.getlength(trial) > width:
-            lines.append(word)
-        else:
-            lines[-1] = trial
-    return lines if len(lines) <= max_lines else None
+def tracked_width(text, face, tracking):
+    if not text:
+        return 0.0
+    return sum(face.getlength(char) for char in text) + tracking * face.size * (len(text) - 1)
 
 
-def fit_title(text, width, max_lines, largest, smallest):
-    for size in range(largest, smallest - 1, -3):
-        typeface = font("DejaVuSans-Bold.ttf", size)
-        lines = wrap(text, typeface, width, max_lines)
-        if lines and max(map(typeface.getlength, lines)) <= width:
-            return typeface, lines
-    typeface = font("DejaVuSans-Bold.ttf", smallest)
-    lines = (wrap(text, typeface, width, 99) or [text])[:max_lines]
-    while typeface.getlength(lines[-1]) > width and len(lines[-1]) > 2:
-        lines[-1] = lines[-1][:-2] + "…"
-    return typeface, lines
+def draw_tracked(draw, xy, text, face, fill, tracking):
+    x, y = xy
+    for char in text:
+        draw.text((x, y), char, font=face, fill=fill)
+        x += face.getlength(char) + tracking * face.size
 
 
-def accent_for(seed):
-    hue = random.Random(seed).randrange(170, 300)
-    return tuple(int(v) for v in np.array(hsv_to_rgb(hue / 360, 0.55, 1)) * 255)
+def fit_tracked(text, weight, width, largest, smallest, tracking):
+    for size in range(largest, smallest - 1, -1):
+        face = typeface(weight, size)
+        if tracked_width(text, face, tracking) <= width:
+            return face
+    return typeface(weight, smallest)
 
 
-def make_art(title, seed, thumbnail, background, eclipse_path, character_path, portrait,
-             badge=None, caption="CINEMATIC SCORE MIX"):
-    rng = random.Random(seed)
-    rng.randrange(170, 300)  # Keep the star field stable for a given title.
-    color = accent_for(seed)
-    accent = np.array(color, dtype=np.float64)
-    y, x = np.mgrid[0:HEIGHT, 0:WIDTH]
-    center_x, horizon = int(WIDTH * 0.74), int(HEIGHT * 0.59)
-    light = np.exp(-((x - center_x) / 390) ** 2 - ((y - horizon) / 210) ** 2)
-    pixels = np.array([6, 10, 24]) + light[..., None] * accent * 0.44
-    pixels += np.random.default_rng(seed).normal(0, 0.55, (HEIGHT, WIDTH, 1))
-    art = Image.fromarray(np.uint8(np.clip(pixels, 0, 255)))
-    draw = ImageDraw.Draw(art, "RGBA")
-    for _ in range(310):
-        px, py = rng.randrange(WIDTH), rng.randrange(horizon)
-        radius = rng.choices([0.6, 1, 1.6], [75, 22, 3])[0]
-        draw.ellipse((px - radius, py - radius, px + radius, py + radius),
-                     fill=(213, 232, 255, rng.randrange(25, 155)))
-    for layer in range(4):
-        base = (10, 16, 34)
-        shade = tuple(int(v + (3 - layer) * 0.085 * a) for v, a in zip(base, accent))
-        heights = []
-        phase = rng.uniform(0, 6)
-        for px in range(0, WIDTH + 1, 8):
-            curve = 35 * math.sin(px / 157 + phase) + 17 * math.sin(px / 59 + phase)
-            ridge = (6 + layer * 2) * math.sin(px / 18 + 2 * phase)
-            heights.append((px, int(horizon + 26 + layer * 47 + curve + ridge + rng.randrange(0, 8))))
-        draw.polygon(heights + [(WIDTH, HEIGHT), (0, HEIGHT)], fill=shade)
-
-    draw.line((64, 632, 1216, 632), fill=(*color, 67))
-    draw.line((64, 96, 154, 96), fill=(*color, 255), width=3)
-    mono = font("DejaVuSansMono.ttf", 21)
-    draw.text((64, 116), caption, font=mono, fill=color)
-    typeface, lines = fit_title(title, 715, 3, 83, 22)
-    for index, line in enumerate(lines):
-        draw.text((60, 160 + index * (typeface.size + 4)), line, font=typeface,
-                  fill=(244, 245, 255), stroke_width=2, stroke_fill=(10, 13, 33))
-    art.save(background)
-    eclipse = create_eclipse(color)
-    eclipse.save(eclipse_path)
-    character = character_layer(portrait, color)
-    character.save(character_path)
-    if portrait is not None:
-        eclipse = eclipse.resize((530, 530), Image.Resampling.LANCZOS)
-    art.paste(eclipse, (center_x - eclipse.width // 2, horizon - 95 - eclipse.height // 2), eclipse)
-    art.paste(character, (750, 106), character)
-    draw = ImageDraw.Draw(art, "RGBA")
-    if badge:
-        badge_font = font("DejaVuSans-Bold.ttf", 52)
-        text = badge.upper()
-        box_w = int(badge_font.getlength(text)) + 52
-        top = max(176 + len(lines) * (typeface.size + 4), 470)
-        draw.rounded_rectangle((64, top, 64 + box_w, top + 84), radius=20, fill=(*color, 255))
-        draw.text((90, top + 12), text, font=badge_font, fill=(9, 12, 30))
-    draw.text((64, 646), "CONTINUOUS SOUNDTRACK MIX", font=mono, fill=(192, 207, 241))
-    art.save(thumbnail, quality=92)
-    return color
+def split_title(title):
+    """'Name: Subtitle (2003)' -> ('NAME', 'SUBTITLE')."""
+    text = YEAR.sub("", title).replace("()", "").strip(" -–—()")
+    for separator in (": ", " – ", " — ", " - "):
+        if separator in text:
+            main, sub = text.split(separator, 1)
+            return main.strip().upper(), sub.strip().upper()
+    return text.upper(), ""
 
 
-def _card(label, accent):
-    card = Image.new("RGBA", CARD_SIZE)
+def _with_shadow(layer, radius):
+    """Soft dark halo under the text so it reads on bright footage without a box."""
+    alpha = layer.getchannel("A").filter(ImageFilter.GaussianBlur(radius))
+    shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    shadow.putalpha(alpha.point(lambda value: int(value * 0.55)))
+    return Image.alpha_composite(shadow, layer)
+
+
+def title_card(title, composer, size=(WIDTH, HEIGHT)):
+    width, height = size
+    scale = width / WIDTH
+    layer = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(layer)
+    main, sub = split_title(title)
+    main_face = fit_tracked(main, "Light", width * 0.84, round(46 * scale), round(22 * scale), 0.16)
+    sub_face = fit_tracked(sub, "Regular", width * 0.80, round(20 * scale), round(11 * scale), 0.32)
+    credit = f"ORIGINAL SCORE BY {composer.upper()}" if composer else "ORIGINAL SCORE"
+    credit_face = fit_tracked(credit, "Regular", width * 0.80, round(12 * scale), round(8 * scale), 0.36)
+    rows = [(main, main_face, 0.16, 255)]
+    if sub:
+        rows.append((sub, sub_face, 0.32, 235))
+    rows.append((credit, credit_face, 0.36, 170))
+    gaps = [round(18 * scale)] * (len(rows) - 1)
+    gaps[-1] = round(34 * scale)
+    total = sum(face.size for _, face, _, _ in rows) + sum(gaps)
+    y = (height - total) / 2 - height * 0.02
+    for index, (text, face, tracking, alpha) in enumerate(rows):
+        x = (width - tracked_width(text, face, tracking)) / 2
+        if index == len(rows) - 1:
+            # A short rule above the credit line.
+            rule = round(36 * scale)
+            draw.line(((width - rule) / 2, y - gaps[-1] / 2, (width + rule) / 2, y - gaps[-1] / 2),
+                      fill=(*INK, 120), width=1)
+        draw_tracked(draw, (x, y), text, face, (*INK, alpha), tracking)
+        y += face.size + (gaps[index] if index < len(gaps) else 0)
+    # A soft, wide darkening behind the words keeps them legible on bright scenes.
+    glow = Image.new("L", size)
+    top = (height - total) / 2 - height * 0.02
+    ImageDraw.Draw(glow).ellipse((width * 0.12, top - height * 0.12, width * 0.88, top + total + height * 0.12),
+                                 fill=110)
+    glow = glow.filter(ImageFilter.GaussianBlur(round(70 * scale)))
+    backing = Image.new("RGBA", size, (0, 0, 0, 0))
+    backing.putalpha(glow)
+    return Image.alpha_composite(backing, _with_shadow(layer, max(2, round(10 * scale))))
+
+
+def cue_card(label, size=(WIDTH, HEIGHT), bar=0.128):
+    """Cue name in the lower cinema bar, left-aligned with the picture's safe margin."""
+    width, height = size
+    scale = width / WIDTH
+    layer = Image.new("RGBA", size)
     if not label:
-        return card
-    draw = ImageDraw.Draw(card)
-    for index, height in enumerate((10, 16, 7)):
-        draw.rectangle((index * 6, 18 - height, index * 6 + 3, 18), fill=(*accent, 255))
-    draw.text((26, 0), "NOW PLAYING", font=font("DejaVuSansMono.ttf", 17), fill=(*accent, 255))
-    typeface, lines = fit_title(label, CARD_SIZE[0] - 8, 1, 34, 22)
-    draw.text((0, 34), lines[0], font=typeface, fill=(244, 245, 255, 255),
-              stroke_width=2, stroke_fill=(10, 13, 33, 255))
-    return card
+        return layer
+    draw = ImageDraw.Draw(layer)
+    text = label.upper()
+    face = fit_tracked(text, "Regular", width * 0.6, round(15 * scale), round(9 * scale), 0.22)
+    bar_px = round(height * bar / 2) * 2
+    y = height - bar_px / 2 - face.size * 0.62
+    x = round(64 * scale)
+    draw.line((x, y + face.size * 0.6, x + round(18 * scale), y + face.size * 0.6), fill=(*INK, 150), width=1)
+    draw_tracked(draw, (x + round(30 * scale), y), text, face, (*INK, 225), 0.22)
+    return layer
 
 
-def scene_shade(path):
-    """Transparent-to-dark gradient over the lower third, keeping the waveform legible on scenes."""
-    shade = np.zeros((HEIGHT, WIDTH, 4), np.uint8)
-    rows = int(HEIGHT * 0.36)
-    shade[-rows:, :, 3] = (np.linspace(0, 1, rows) ** 1.6 * 185).astype(np.uint8)[:, None]
-    shade[..., :3] = (5, 8, 20)
-    Image.fromarray(shade, "RGBA").save(path)
-    return path
+def _faded(image, level):
+    if level >= 1:
+        return image
+    faded = image.copy()
+    faded.putalpha(image.getchannel("A").point(lambda value: int(value * level)))
+    return faded
 
 
 def write_timeline(entries, seconds, listing):
@@ -174,64 +148,137 @@ def write_timeline(entries, seconds, listing):
     return listing
 
 
-def now_playing_cards(entries, accent, scratch, seconds):
-    """Concat list that shows each cue name from its start time. entries: [(start, label)]."""
-    if not entries:
-        return None
-    scratch.mkdir(parents=True, exist_ok=True)
-    if entries[0][0] > 0:
-        entries = [(0.0, "")] + list(entries)
-    files, timeline = {}, []
-    for start, label in entries:
-        if label not in files:
-            files[label] = scratch / f"card-{len(files)}.png"
-            _card(label, accent).save(files[label])
-        timeline.append((start, files[label]))
-    return write_timeline(timeline, seconds, scratch / "cards.ffconcat")
+def text_timeline(title, composer, cues, seconds, scratch, size=(WIDTH, HEIGHT)):
+    """Concat list of text overlays: the opening title, then each cue name as it begins.
 
-
-def portrait_timeline(layers, scenes, scene_people, seconds, listing):
-    """Swap the foreground portrait halfway through each cutaway, where the scene hides the change.
-
-    layers: {person: png path}, most important first. After a scene, the portrait shows that
-    scene's character when there is one, otherwise the next character in rotation.
+    cues: [(start, label)]. Each card fades in and out in a few alpha steps; images hold
+    between entries, so the list stays short however long the video is.
     """
-    if not layers:
-        return None
-    order = list(layers)
-    current = order[0]
-    timeline = [(0.0, layers[current])]
-    for (_, _, length, when), person in zip(scenes, scene_people):
-        following = person if person in layers else order[(order.index(current) + 1) % len(order)]
-        if following != current:
-            current = following
-            timeline.append((when + length / 2, layers[current]))
-    return write_timeline(timeline, seconds, listing)
+    scratch.mkdir(parents=True, exist_ok=True)
+    blank = scratch / "blank.png"
+    Image.new("RGBA", size).save(blank)
+    shows = []
+    title_start, title_end = TITLE_SECONDS
+    if seconds >= 20:
+        shows.append((title_start, min(title_end, seconds * 0.4), title_card(title, composer, size)))
+    free_from = shows[-1][1] + 1.0 if shows else 0.0
+    cards = {}
+    for start, label in cues:
+        start = max(start + 1.5, free_from)
+        end = min(start + CUE_SECONDS, seconds - 4)
+        if not label or end - start < 3:
+            continue
+        if label not in cards:
+            cards[label] = cue_card(label, size)
+        shows.append((start, end, cards[label]))
+        free_from = end + 1.0
+    entries, files = [(0.0, blank)], {}
+    ramp = FADE_STEPS * FADE_STEP_SECONDS
+    for start, end, image in shows:
+        key = id(image)
+        if key not in files:
+            files[key] = []
+            for step in range(1, FADE_STEPS + 1):
+                path = scratch / f"text-{len(files)}-{step}.png"
+                _faded(image, step / FADE_STEPS).save(path)
+                files[key].append(path)
+        steps = files[key]
+        for step, path in enumerate(steps):
+            entries.append((start + step * FADE_STEP_SECONDS, path))
+        for step, path in enumerate(reversed(steps)):
+            entries.append((end - ramp + step * FADE_STEP_SECONDS, path))
+        entries.append((end, blank))
+    entries.sort(key=lambda entry: entry[0])
+    return write_timeline(entries, seconds, scratch / "text.ffconcat")
 
 
-def make_vertical_art(title, thumbnail, output, accent, cta):
-    """1080x1920 poster for the Shorts teaser, built from the landscape thumbnail."""
-    width, height = 1080, 1920
-    with Image.open(thumbnail) as image:
-        source = image.convert("RGB")
-    backdrop = ImageOps.fit(source, (width, height), Image.Resampling.LANCZOS)
-    backdrop = backdrop.filter(ImageFilter.GaussianBlur(36))
-    backdrop = Image.blend(backdrop, Image.new("RGB", backdrop.size, (6, 9, 22)), 0.55)
-    front = source.resize((width - 80, round((width - 80) * source.height / source.width)),
-                          Image.Resampling.LANCZOS)
-    mask = Image.new("L", front.size)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, front.width - 1, front.height - 1), radius=36, fill=255)
-    backdrop.paste(front, (40, 640), mask)
-    draw = ImageDraw.Draw(backdrop)
-    draw.line((60, 250, 170, 250), fill=accent, width=4)
-    draw.text((60, 272), "CINEMATIC SCORE MIX", font=font("DejaVuSansMono.ttf", 34), fill=accent)
-    typeface, lines = fit_title(title, 960, 3, 96, 40)
-    for index, line in enumerate(lines):
-        draw.text((56, 330 + index * (typeface.size + 6)), line, font=typeface,
-                  fill=(244, 245, 255), stroke_width=3, stroke_fill=(10, 13, 33))
-    cta_font = font("DejaVuSans-Bold.ttf", 44)
-    cta_w = cta_font.getlength(cta)
-    draw.rounded_rectangle(((width - cta_w) / 2 - 36, 1560, (width + cta_w) / 2 + 36, 1660),
-                           radius=50, fill=accent)
-    draw.text(((width - cta_w) / 2, 1584), cta, font=cta_font, fill=(9, 12, 30))
-    backdrop.save(output)
+def grade_still(image):
+    image = ImageEnhance.Contrast(image).enhance(1.07)
+    return ImageEnhance.Color(image).enhance(0.88)
+
+
+def make_thumbnail(still, title, subtitle, path, size=(WIDTH, HEIGHT)):
+    """A film still, darkened toward the lower left, with the title set in clean type."""
+    width, height = size
+    if still is None:
+        base = Image.fromarray(_dark_gradient(width, height))
+    else:
+        base = grade_still(ImageOps.fit(still.convert("RGB"), size, Image.Resampling.LANCZOS))
+    y, x = np.mgrid[0:height, 0:width]
+    shade = np.clip(1.15 - x / (width * 0.9), 0, 1) ** 1.4 * 0.72 + np.clip(y / height - 0.45, 0, 1) * 0.6
+    pixels = np.asarray(base, dtype=np.float32) * (1 - np.clip(shade, 0, 0.86))[..., None]
+    image = Image.fromarray(np.uint8(np.clip(pixels, 0, 255))).convert("RGBA")
+    layer = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(layer)
+    main, sub = split_title(title)
+    margin = round(width * 0.055)
+    main_face = None
+    for size_px in range(round(height * 0.12), round(height * 0.05), -2):
+        face = typeface("Bold", size_px)
+        words, lines = main.split(), [""]
+        for word in words:
+            trial = (lines[-1] + " " + word).strip()
+            if lines[-1] and tracked_width(trial, face, 0.02) > width * 0.6:
+                lines.append(word)
+            else:
+                lines[-1] = trial
+        if len(lines) <= 3 and max(tracked_width(line, face, 0.02) for line in lines) <= width * 0.62:
+            main_face, main_lines = face, lines
+            break
+    if main_face is None:
+        main_face, main_lines = typeface("Bold", round(height * 0.05)), [main]
+    sub_face = fit_tracked(sub, "Medium", width * 0.6, round(height * 0.04), round(height * 0.022), 0.08)
+    small_face = typeface("Medium", round(height * 0.026))
+    block = len(main_lines) * main_face.size * 1.02 + (sub_face.size * 1.6 if sub else 0) + small_face.size * 2.6
+    top = height - margin - block
+    draw.line((margin, top - main_face.size * 0.35, margin + width * 0.05, top - main_face.size * 0.35),
+              fill=(*INK, 230), width=max(2, round(height * 0.004)))
+    for line in main_lines:
+        draw_tracked(draw, (margin, top), line, main_face, (*INK, 255), 0.02)
+        top += main_face.size * 1.02
+    if sub:
+        top += sub_face.size * 0.6
+        draw_tracked(draw, (margin, top), sub, sub_face, (*INK, 235), 0.08)
+        top += sub_face.size * 1.25
+    top += small_face.size * 0.9
+    draw_tracked(draw, (margin, top), subtitle.upper(), small_face, (*INK, 190), 0.3)
+    image = Image.alpha_composite(image, _with_shadow(layer, round(height * 0.012)))
+    image.convert("RGB").save(path, quality=93)
+    return path
+
+
+def _dark_gradient(width, height):
+    y = np.linspace(0, 1, height)[:, None, None]
+    top, bottom = np.array([18, 22, 28]), np.array([5, 6, 9])
+    return np.uint8(np.broadcast_to(top * (1 - y) + bottom * y, (height, width, 3)))
+
+
+def plain_backdrop(path, size=(WIDTH, HEIGHT)):
+    """Used only when no footage is available."""
+    Image.fromarray(_dark_gradient(*size)).save(path)
+    return path
+
+
+def short_overlay(title, cta, path, size=(1080, 1920)):
+    """Title above the picture and a quiet call to action below it, for the vertical teaser."""
+    width, height = size
+    scale = width / 1080
+    layer = Image.new("RGBA", size)
+    draw = ImageDraw.Draw(layer)
+    main, sub = split_title(title)
+    main_face = fit_tracked(main, "Light", width * 0.86, round(58 * scale), round(28 * scale), 0.14)
+    sub_face = fit_tracked(sub, "Regular", width * 0.84, round(26 * scale), round(14 * scale), 0.28)
+    y = height * 0.25
+    draw_tracked(draw, ((width - tracked_width(main, main_face, 0.14)) / 2, y), main, main_face, (*INK, 255), 0.14)
+    if sub:
+        y += main_face.size * 1.5
+        draw_tracked(draw, ((width - tracked_width(sub, sub_face, 0.28)) / 2, y), sub, sub_face,
+                     (*INK, 230), 0.28)
+    cta_face = fit_tracked(cta.upper(), "Regular", width * 0.84, round(22 * scale), round(12 * scale), 0.3)
+    y = height * 0.73
+    rule = round(40 * scale)
+    draw.line(((width - rule) / 2, y - 26 * scale, (width + rule) / 2, y - 26 * scale), fill=(*INK, 140), width=2)
+    draw_tracked(draw, ((width - tracked_width(cta.upper(), cta_face, 0.3)) / 2, y), cta.upper(), cta_face,
+                 (*INK, 210), 0.3)
+    _with_shadow(layer, round(12 * scale)).save(path)
+    return path
