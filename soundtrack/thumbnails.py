@@ -201,6 +201,12 @@ def candidate_frames(analysis, grab, count=3, examine=18, lead=None):
         people_used[frame[2]] = people_used.get(frame[2], 0) + 1
         if len(chosen) == count:
             break
+    # With few distinct people, a third strong frame of the same person beats a faceless one.
+    for _, frame, _ in examined:
+        if len(chosen) == count:
+            break
+        if all(frame is not other for other in chosen):
+            chosen.append(frame)
     return chosen
 
 

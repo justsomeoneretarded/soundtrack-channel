@@ -51,10 +51,17 @@ def video_title(title, seconds, style, composer=""):
     if composer:
         options.append(f" Soundtrack | {composer} | {length} {kind}")
     options.append(f" Soundtrack Mix | {length} {kind}" if style == "mix" else f" Soundtrack | {length} {kind}")
-    for suffix in options:
-        if len(title) + len(suffix) <= 100:
-            return title + suffix
-    return title[:100 - len(options[-1])].rstrip() + options[-1]
+    # Shorten at natural points (drop the year, then the subtitle) rather than mid-word.
+    bare = re.sub(r"\s*[(\[]\s*(?:19|20)\d{2}\s*[)\]]", "", title).strip()
+    main = re.split(r":\s+|\s+[-–—]\s+", bare, maxsplit=1)[0].strip()
+    for name in dict.fromkeys((title, bare, main)):
+        for suffix in options:
+            if len(name) + len(suffix) <= 100:
+                return name + suffix
+    words, suffix = main.split(), options[-1]
+    while words and len(" ".join(words)) + len(suffix) > 100:
+        words.pop()
+    return " ".join(words) + suffix
 
 
 def hashtag(text):
