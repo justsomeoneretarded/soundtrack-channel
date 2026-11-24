@@ -10,7 +10,7 @@ from .audio import loudest_window, loudness_filter, loudness_gain, measure_loudn
 from .common import clean_composer, length_label, terms
 from .metadata import chapters, write_ffmetadata, write_outputs
 from .footage import analyse, gather, still, work_details
-from .reel import best_shot, build_reel, frame_size, plan_reel
+from .reel import build_reel, frame_size, plan_reel, thumbnail_frame
 from .sources import cue_labels, download_links, sources_for
 from .video import render_short, render_video
 from .visuals import make_thumbnail, plain_backdrop, short_overlay, text_timeline
@@ -109,8 +109,7 @@ def main(argv=None):
         stage("Building the film reel.")
         reel, _ = build_reel(shots, scratch / "reel", seconds, seed, args.draft)
         backdrop = plain_backdrop(scratch / "backdrop.png")
-        lead = best_shot(shots) if reel else None
-        frame = still(lead.path, lead.start + lead.length / 2) if lead else None
+        frame = thumbnail_frame(shots, still) if reel else None
         preview = length_label(seconds).endswith("Preview")
         duration = "Preview" if preview else f"{round(seconds / 60)} minutes"
         make_thumbnail(frame, title, f"Original score  ·  {duration}", args.out / "thumbnail.jpg")
