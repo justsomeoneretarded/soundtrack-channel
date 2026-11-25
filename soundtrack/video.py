@@ -18,21 +18,37 @@ def _check_duration(output, seconds):
         raise RuntimeError(f"Expected {seconds}s of video, rendered {picture_duration}s")
 
 
-def _check_black_picture(output, seconds, reel=False):
+def _check_picture(output, seconds, reel=False):
     if seconds < 30:
         return
-    # Sample keyframes to catch a sustained blackout without decoding the entire video.
+    # Sample keyframes to check the picture without decoding the entire video.
     threshold = 0.085 if reel else 0.02
+    filters = f"fps=1/2,scale=64:36,blackdetect=d=28:pic_th=0.995:pix_th={threshold}"
+    freeze_filter = "freezedetect=n=-50dB:d=28"
+    if reel:
+        # The no-footage fallback is intentionally static.
+        filters += f",{freeze_filter}"
     result = subprocess.run([
         "ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-skip_frame", "nokey",
         "-i", str(output), "-map", "0:v:0", "-an",
-        "-vf", f"fps=1/2,scale=64:36,blackdetect=d=28:pic_th=0.995:pix_th={threshold}",
+        "-vf", filters,
         "-f", "null", "-",
     ], capture_output=True, text=True, check=True)
     blackout = re.search(r"black_start:([\d.]+) black_end:([\d.]+)", result.stderr)
     if blackout:
         start, end = blackout.groups()
         raise RuntimeError(f"Video is black from {start}s to {end}s")
+    freeze_start = r"lavfi\.freezedetect\.freeze_start: ([\d.]+)"
+    if not re.search(freeze_start, result.stderr):
+        return
+    # A repeating reel can have identical keyframes even when the intervening frames move.
+    result = subprocess.run([
+        "ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-i", str(output),
+        "-map", "0:v:0", "-an", "-vf", f"fps=2,scale=64:36,{freeze_filter}", "-f", "null", "-",
+    ], capture_output=True, text=True, check=True)
+    freeze = re.search(freeze_start, result.stderr)
+    if freeze:
+        raise RuntimeError(f"Video freezes at {freeze.group(1)}s for at least 28s")
 
 
 def _picture_input(reel, backdrop, fps, start=0.0):
@@ -73,7 +89,7 @@ def render_video(audio, reel, backdrop, text, output, seconds, draft,
         "-movflags", "+faststart", str(output),
     ], check=True)
     _check_duration(output, seconds)
-    _check_black_picture(output, seconds, reel=bool(reel))
+    _check_picture(output, seconds, reel=bool(reel))
 
 
 def render_short(audio, reel, backdrop, overlay, output, start, seconds, audio_filter="anull", draft=False):

@@ -77,11 +77,24 @@ def test_reel_fills_video_when_source_ends_mid_shot(tmp_path):
 
 
 def test_video_validation_rejects_sustained_blackout(tmp_path):
-    from soundtrack.video import _check_black_picture
+    from soundtrack.video import _check_picture
 
     output = tmp_path / "blackout.mp4"
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "color=black:s=64x36:r=12:d=40", "-g", "24", "-c:v", "libx264", str(output)],
                    check=True)
     with pytest.raises(RuntimeError, match="Video is black"):
-        _check_black_picture(output, 40)
+        _check_picture(output, 40)
+
+
+def test_picture_validation_rejects_bright_freeze_in_reel(tmp_path):
+    from soundtrack.video import _check_picture
+
+    output = tmp_path / "freeze.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=s=128x72:r=12:d=8", "-vf", "tpad=stop_mode=clone:stop_duration=36",
+                    "-g", "24", "-c:v", "libx264", str(output)], check=True)
+
+    with pytest.raises(RuntimeError, match="Video freezes at"):
+        _check_picture(output, 44, reel=True)
+    _check_picture(output, 44)
