@@ -178,8 +178,10 @@ def test_reel_alternates_videos_and_fills_the_video(tmp_path, monkeypatch):
     assert repeats <= abs(counts[0] - counts[1])  # Neighbours come from different videos.
     assert reel.best_shot(shots).person == 0
     monkeypatch.setattr(reel, "_chunk", lambda group, output, draft, mask: (output.touch(), 40.0)[1])
-    listing, unique = reel.build_reel(shots * 3, tmp_path, 600, seed=1)
-    files = [line for line in listing.read_text().splitlines() if line.startswith("file")]
+    monkeypatch.setattr(reel.subprocess, "run", lambda *args, **kwargs: None)
+    picture, unique = reel.build_reel(shots * 3, tmp_path, 600, seed=1)
+    assert picture == tmp_path / "reel.mp4"
+    files = [line for line in (tmp_path / "reel.ffconcat").read_text().splitlines() if line.startswith("file")]
     assert unique == 40.0 * len(set(files)) and len(files) * 40 >= 605
     assert all(a != b for a, b in zip(files, files[1:]))  # No chunk plays twice in a row.
 
@@ -311,7 +313,7 @@ def test_render_graph_has_no_memory_floods(monkeypatch, tmp_path):
         raise SystemExit  # Stop before encoding.
 
     monkeypatch.setattr(video.subprocess, "run", fake_run)
-    for reel in (tmp_path / "reel.ffconcat", None):
+    for reel in (tmp_path / "reel.mp4", None):
         with pytest.raises(SystemExit):
             video.render_video(tmp_path / "mix.pcm", reel, tmp_path / "b.png", tmp_path / "text.ffconcat",
                                tmp_path / "out.mp4", 3600, False, "anull", None)

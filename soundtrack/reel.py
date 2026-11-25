@@ -14,7 +14,7 @@ import sys
 import numpy as np
 from PIL import Image
 
-from .common import FFMPEG, HEIGHT, WIDTH
+from .common import FFMPEG, HEIGHT, WIDTH, media_duration
 from .footage import candidate_windows, choose
 
 DISSOLVE = 0.8         # Seconds of cross-dissolve between shots.
@@ -128,13 +128,16 @@ def _chunk(shots, output, draft, mask):
         "-t", f"{elapsed:.3f}", "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast",
         "-crf", "17", "-g", str(fps * 2), "-pix_fmt", "yuv420p", str(output),
     ])
-    return elapsed if result.returncode == 0 and output.exists() else None
+    if result.returncode != 0 or not output.exists():
+        return None
+    # A source can end mid-shot and FFmpeg can still successfully write a shorter chunk.
+    return media_duration(output, stream="v:0") or None
 
 
 def build_reel(shots, scratch, seconds, seed, draft=False):
-    """Render the shots in chunks and write an ffconcat list that fills `seconds`.
+    """Render the shots in chunks and assemble a reel that fills `seconds`.
 
-    Returns (listing, unique_seconds), or (None, 0) when no chunk could be rendered.
+    Returns (reel_path, unique_seconds), or (None, 0) when no chunk could be rendered.
     """
     scratch.mkdir(parents=True, exist_ok=True)
     chunks = []
@@ -168,6 +171,11 @@ def build_reel(shots, scratch, seconds, seed, draft=False):
     listing = scratch / "reel.ffconcat"
     lines = ["ffconcat version 1.0"] + [f"file '{chunks[i][0].as_posix()}'" for i in order]
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Give the compositor and teaser one continuous video input with a seekable timeline.
+    reel = scratch / "reel.mp4"
+    subprocess.run(FFMPEG + ["-f", "concat", "-safe", "0", "-i", str(listing),
+                             "-map", "0:v:0", "-c:v", "copy", "-t", str(seconds + 2),
+                             str(reel)], check=True)
     print(f"Built a {unique / 60:.1f}-minute reel from {len(shots)} shots in {len(chunks)} chunks.",
           flush=True)
-    return listing, unique
+    return reel, unique

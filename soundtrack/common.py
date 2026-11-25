@@ -78,10 +78,12 @@ def font(name, size):
     return ImageFont.truetype(str(FONT_ROOT / name), size)
 
 
-def media_duration(path):
-    """Return a container duration in seconds, or None when it cannot be read."""
+def media_duration(path, stream=None):
+    """Return the duration of a container or selected stream, in seconds."""
+    selection = ["-select_streams", stream] if stream else []
+    entry = "stream=duration" if stream else "format=duration"
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        ["ffprobe", "-v", "error", *selection, "-show_entries", entry,
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
         capture_output=True, text=True,
     )

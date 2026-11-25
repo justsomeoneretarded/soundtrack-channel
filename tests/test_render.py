@@ -56,3 +56,32 @@ def test_full_render(tmp_path, style):
         "ffprobe", "-v", "error", "-show_chapters", "-of", "csv=p=0", str(out / "soundtrack.mp4")],
         text=True).strip().count("\n") + 1
     assert chapter_count == len(manifest["chapters"]) >= 3
+
+
+def test_reel_fills_video_when_source_ends_mid_shot(tmp_path):
+    from soundtrack.reel import Shot, build_reel
+    from soundtrack.video import render_video
+
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=s=320x180:r=24:d=3", "-c:v", "libx264", str(clip)], check=True)
+    shots = [Shot(clip, 2, 4.5, 0, -1, 1.0)] * 8
+    audio = tmp_path / "mix.pcm"
+    audio.write_bytes(bytes(18 * 48000 * 2 * 4))
+    output = tmp_path / "soundtrack.mp4"
+    reel, unique = build_reel(shots, tmp_path / "reel", 18, seed=0, draft=True)
+
+    assert 0 < unique < 3
+    render_video(audio, reel, None, None, output, 18, draft=True)
+    assert abs(media_duration(output, stream="v:0") - 18) <= 0.1
+
+
+def test_video_validation_rejects_sustained_blackout(tmp_path):
+    from soundtrack.video import _check_black_picture
+
+    output = tmp_path / "blackout.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=black:s=64x36:r=12:d=40", "-g", "24", "-c:v", "libx264", str(output)],
+                   check=True)
+    with pytest.raises(RuntimeError, match="Video is black"):
+        _check_black_picture(output, 40)
